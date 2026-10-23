@@ -1,0 +1,10 @@
+pocketbase/
+├── pb_data/ (автоматически создастся при запуске)
+├── pb_migrations/
+│   ├── 1710000000_init_schema.js
+│   └── 1710000001_seed_data.js
+├── pb_hooks/
+│   └── document_versions.pb.js
+├── .env.example
+├── Dockerfile
+└── docker-compose.yml
