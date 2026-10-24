@@ -9,18 +9,15 @@ migrate((db) => {
   users.createRule = "@request.auth.role = 'admin'";
   users.listRule = "@request.auth.role = 'admin' || @request.auth.id = id";
   users.viewRule = "@request.auth.role = 'admin' || @request.auth.id = id";
-  users.updateRule = "@request.auth.role = 'admin'";
+  // не-админ может править только свой профиль и не может трогать role / access_level
+  users.updateRule = "@request.auth.role = 'admin' || (@request.auth.id = id && @request.data.role:isset = false && @request.data.access_level:isset = false)";
   users.deleteRule = "@request.auth.role = 'admin'";
   dao.saveCollection(users);
 
-  // 2. documents (без current_version пока)
+  // 2. documents — правила ставим ПОСЛЕ добавления current_version,
+  //    иначе PocketBase не сохранит коллекцию (правило ссылается на несуществующее поле)
   const docs = new Collection({
     name: "documents", type: "base",
-    listRule: "@request.auth.id != '' && status = 'active' && (@request.auth.role = 'admin' || @request.auth.role = 'methodologist' || current_version.access_level <= @request.auth.access_level)",
-    viewRule: "@request.auth.id != '' && status = 'active' && (@request.auth.role = 'admin' || @request.auth.role = 'methodologist' || current_version.access_level <= @request.auth.access_level)",
-    createRule: "@request.auth.role = 'admin' || @request.auth.role = 'methodologist'",
-    updateRule: "@request.auth.role = 'admin' || @request.auth.role = 'methodologist'",
-    deleteRule: "@request.auth.role = 'admin'",
     schema: [
       { name: "title", type: "text", required: true },
       { name: "doc_type", type: "select", required: true, options: { maxSelect: 1, values: ["instruction", "matrix", "module", "methodology"] } },
@@ -42,7 +39,7 @@ migrate((db) => {
       { name: "document", type: "relation", required: true, options: { collectionId: docs.id, maxSelect: 1 } },
       { name: "version_label", type: "text", required: true },
       { name: "edition", type: "text" },
-      { name: "file", type: "file", options: { maxSize: 20971520 } },
+      { name: "file", type: "file", options: { maxSelect: 1, maxSize: 20971520 } },
       { name: "status", type: "select", required: true, options: { maxSelect: 1, values: ["draft", "indexing", "active", "archived", "failed"] } },
       { name: "access_level", type: "number", required: true },
       { name: "effective_date", type: "date" },
@@ -55,6 +52,13 @@ migrate((db) => {
   dao.saveCollection(docVersions);
 
   docs.schema.addField(new SchemaField({ name: "current_version", type: "relation", options: { collectionId: docVersions.id, maxSelect: 1 } }));
+  // методолог и admin видят документы во всех статусах; employee — только active и по access_level
+  const docsRead = "@request.auth.id != '' && (@request.auth.role = 'admin' || @request.auth.role = 'methodologist' || (status = 'active' && current_version.access_level <= @request.auth.access_level))";
+  docs.listRule = docsRead;
+  docs.viewRule = docsRead;
+  docs.createRule = "@request.auth.role = 'admin' || @request.auth.role = 'methodologist'";
+  docs.updateRule = "@request.auth.role = 'admin' || @request.auth.role = 'methodologist'";
+  docs.deleteRule = "@request.auth.role = 'admin'";
   dao.saveCollection(docs);
 
   // 4. module_templates
@@ -72,7 +76,7 @@ migrate((db) => {
       { name: "description", type: "text" },
       { name: "keywords", type: "json" },
       { name: "fields_schema", type: "json" },
-      { name: "file", type: "file" },
+      { name: "file", type: "file", options: { maxSelect: 1 } },
       { name: "version", type: "relation", options: { collectionId: docVersions.id, maxSelect: 1 } },
       { name: "is_active", type: "bool" }
     ]
@@ -84,7 +88,7 @@ migrate((db) => {
     name: "chat_sessions", type: "base",
     listRule: "@request.auth.role = 'admin' || user = @request.auth.id",
     viewRule: "@request.auth.role = 'admin' || user = @request.auth.id",
-    createRule: "@request.auth.id != ''",
+    createRule: "@request.auth.id != '' && @request.data.user = @request.auth.id",
     updateRule: "@request.auth.role = 'admin' || user = @request.auth.id",
     deleteRule: "@request.auth.role = 'admin'",
     schema: [
@@ -97,11 +101,12 @@ migrate((db) => {
   dao.saveCollection(sessions);
 
   // 6. messages
+  // В createRule поля создаваемой записи читаются через @request.data.*
   const messages = new Collection({
     name: "messages", type: "base",
     listRule: "@request.auth.role = 'admin' || session.user = @request.auth.id",
     viewRule: "@request.auth.role = 'admin' || session.user = @request.auth.id",
-    createRule: "@request.auth.id != ''",
+    createRule: "@request.auth.id != '' && (@request.auth.role = 'admin' || @request.data.session.user = @request.auth.id)",
     updateRule: "@request.auth.role = 'admin'",
     deleteRule: "@request.auth.role = 'admin'",
     schema: [
@@ -122,7 +127,7 @@ migrate((db) => {
     name: "generated_drafts", type: "base",
     listRule: "@request.auth.role = 'admin' || user = @request.auth.id",
     viewRule: "@request.auth.role = 'admin' || user = @request.auth.id",
-    createRule: "@request.auth.id != ''",
+    createRule: "@request.auth.id != '' && @request.data.user = @request.auth.id && @request.data.session.user = @request.auth.id",
     updateRule: "@request.auth.role = 'admin' || user = @request.auth.id",
     deleteRule: "@request.auth.role = 'admin'",
     schema: [
@@ -130,7 +135,7 @@ migrate((db) => {
       { name: "user", type: "relation", required: true, options: { collectionId: users.id, maxSelect: 1 } },
       { name: "module", type: "relation", required: true, options: { collectionId: templates.id, maxSelect: 1 } },
       { name: "fields_values", type: "json" },
-      { name: "file", type: "file" },
+      { name: "file", type: "file", options: { maxSelect: 1 } },
       { name: "status", type: "select", required: true, options: { maxSelect: 1, values: ["filling", "ready", "exported"] } },
       { name: "route", type: "json" },
       { name: "note_text", type: "text" }
@@ -143,7 +148,7 @@ migrate((db) => {
     name: "feedback", type: "base",
     listRule: "@request.auth.role = 'admin' || user = @request.auth.id",
     viewRule: "@request.auth.role = 'admin' || user = @request.auth.id",
-    createRule: "@request.auth.id != ''",
+    createRule: "@request.auth.id != '' && @request.data.user = @request.auth.id && @request.data.message.session.user = @request.auth.id",
     updateRule: "@request.auth.role = 'admin' || user = @request.auth.id",
     deleteRule: "@request.auth.role = 'admin'",
     schema: [
@@ -160,7 +165,7 @@ migrate((db) => {
     name: "audit_log", type: "base",
     listRule: "@request.auth.role = 'admin'",
     viewRule: "@request.auth.role = 'admin'",
-    createRule: "@request.auth.id != ''",
+    createRule: "@request.auth.id != '' && @request.data.user = @request.auth.id",
     updateRule: "@request.auth.role = 'admin'",
     deleteRule: "@request.auth.role = 'admin'",
     schema: [
@@ -183,8 +188,15 @@ migrate((db) => {
   dao.deleteCollection(dao.findCollectionByNameOrId("chat_sessions"));
   dao.deleteCollection(dao.findCollectionByNameOrId("module_templates"));
   const docs = dao.findCollectionByNameOrId("documents");
+  docs.listRule = null;
+  docs.viewRule = null;
   docs.schema.removeField("current_version");
   dao.saveCollection(docs);
   dao.deleteCollection(dao.findCollectionByNameOrId("document_versions"));
   dao.deleteCollection(dao.findCollectionByNameOrId("documents"));
+  const users = dao.findCollectionByNameOrId("users");
+  users.schema.removeField("department");
+  users.schema.removeField("role");
+  users.schema.removeField("access_level");
+  dao.saveCollection(users);
 });
