@@ -153,7 +153,7 @@
 						<div class="feedback"><span>Ответ был полезен?</span><div><button class:copied class="tiny" onclick={copyAnswer}>♧ {copied ? 'Скопировано' : 'Да, спасибо'}</button><button class="tiny">♧</button><button class="tiny">▣</button></div></div>
 					</div>
 				{:else}
-					<div class="welcome-card"><div class="welcome-symbol">✧</div><h2>С чего начнём?</h2><p>Задайте вопрос о внутренних процессах. Я найду нужные документы, покажу источники и помогу подготовить черновик.</p><div><button class="interactive-button secondary">⌕ Найти документ</button><button class="interactive-button secondary">▤ Выбрать шаблон</button></div></div>
+					<div class="welcome-card"><div class="welcome-symbol">✧</div><h2>С чего начнём?</h2><p>Задайте вопрос о внутренних процессах. Я найду нужные документы, покажу источники и помогу подготовить черновик.</p><div><button class="interactive-button secondary">⌕ Найти документ</button><button class="interactive-button secondary">▤ Обновить список</button></div></div>
 				{/if}
 
 					<div class="composer"><textarea bind:value={draft} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), submitQuery())} placeholder="Задайте уточняющий вопрос..."></textarea><div class="composer-bottom"><button class="attach">⌕ Прикрепить файл</button><button class="interactive-button primary send" onclick={submitQuery}>↥ Отправить</button></div></div>
@@ -169,18 +169,12 @@
 				<div class="page-heading"><div><div class="eyebrow">02 / WORKSPACE · {activeNav.toUpperCase()}</div><h1>{activeNav}</h1><p>Документы из подключённой базы PocketBase.</p></div><button class="interactive-button ghost-button" onclick={() => (activeNav = 'AI-чат')}>✧ К AI-чату</button></div>
 				<div class="workspace-grid">
 					<section class="workspace-main">
-						<div class="workspace-banner"><span class="workspace-icon">{navItems.find((item) => item.label === activeNav)?.icon}</span><div><strong>{activeNav === 'Документы' ? 'Единый каталог документов' : activeNav === 'Шаблоны' ? 'Шаблоны для ежедневной работы' : activeNav === 'Черновики' ? 'Черновики и подготовленные материалы' : activeNav === 'История' ? 'История запросов и ответов' : activeNav === 'Аналитика' ? 'Аналитика использования знаний' : activeNav === 'Команда' ? 'Команда и уровни доступа' : 'Настройки рабочего пространства'}</strong><p>Здесь можно продолжить работу с внутренними материалами.</p></div></div>
+						<div class="workspace-banner"><span class="workspace-icon">{navItems.find((item) => item.label === activeNav)?.icon}</span><div><strong>Единый каталог документов</strong><p>Здесь можно продолжить работу с внутренними материалами.</p></div></div>
 						{#if activeNav === 'Документы'}
 							{#if selectedDocument}<div class="document-detail"><button class="back-link" onclick={() => (selectedDocument = '')}>← Все документы</button><div class="document-detail-head"><span class="document-icon">▣</span><div><h2>{selectedDocument}</h2><p>Документ из PocketBase · действующая версия</p></div><span class="status-chip">Действует</span></div><div class="document-detail-body"><h3>О документе</h3><p>Документ загружен из подключённого хранилища PocketBase.</p></div></div>{:else}<div class="document-list">{#if documents.length}{#each documents as doc}<button class="document-row" onclick={() => (selectedDocument = doc.title)}><span class="document-icon">▣</span><span><strong>{doc.title}</strong><small>{doc.description ?? 'Документ из PocketBase'}</small></span><em>{doc.updated ? new Date(doc.updated).toLocaleDateString('ru-RU') : 'Актуальный'}</em></button>{/each}{:else}<div class="empty-rail">Нет доступных документов. Проверьте авторизацию PocketBase.</div>{/if}</div>{/if}
-						{:else if activeNav === 'Шаблоны'}
-							<div class="template-grid"><div class="template-card"><span>▤</span><strong>Служебная записка</strong><small>ЗАК-01 · Активен</small><button class="interactive-button secondary" onclick={() => { activeNav = 'AI-помощник'; draft = 'Создать черновик служебной записки'; }}>Использовать</button></div><div class="template-card"><span>▤</span><strong>Заявка на командировку</strong><small>КОМ-02 · Активен</small><button class="interactive-button secondary" onclick={() => { activeNav = 'AI-помощник'; draft = 'Подготовить заявку на командировку'; }}>Использовать</button></div></div>
-						{:else if activeNav === 'Черновики'}
-							<div class="draft-preview"><span class="teal-icon">◈</span><div><h2>Служебная записка на закупку оборудования</h2><p>Подготовлено на основе ответа AI · ещё не отправлено на согласование</p></div><button class="interactive-button primary" onclick={() => (activeNav = 'AI-помощник')}>Открыть</button></div>
-						{:else}
-							<div class="metrics-empty"><p>Показатели читаются автоматически из текущей сессии.</p><div class="metric-fields"><label>Ответов за период<input value={answeredQueries || '—'} readonly /></label><label>Релевантность<input value={answeredQueries ? 'Считается' : '—'} readonly /></label><label>Среднее время поиска<input value={answeredQueries ? 'Считается' : '—'} readonly /></label></div></div>
 						{/if}
 					</section>
-					<aside class="rail-card context-card"><h3>⌁ Быстрые действия</h3><button class="interactive-button" onclick={() => (activeNav = 'AI-помощник')}>Задать вопрос AI <span>↗</span></button><button class="interactive-button" onclick={() => (activeNav = 'Документы')}>Открыть документы <span>↗</span></button><button class="interactive-button" onclick={() => (activeNav = 'Шаблоны')}>Выбрать шаблон <span>↗</span></button></aside>
+					<aside class="rail-card context-card"><h3>⌁ Быстрые действия</h3><button class="interactive-button" onclick={() => (activeNav = 'AI-чат')}>Задать вопрос AI <span>↗</span></button><button class="interactive-button" onclick={() => (activeNav = 'Документы')}>Открыть документы <span>↗</span></button><button class="interactive-button" onclick={() => (activeNav = 'Документы')}>Обновить список <span>↗</span></button></aside>
 				</div>
 			{/if}
 		</div>
@@ -228,7 +222,15 @@
 	.composer { margin-top: 18px; padding: 16px 18px 13px; border-radius: 13px; }.composer textarea { min-height: 72px; font-size: 15px; }.attach { font-size: 13px; }.send { padding: 11px 18px; }.disclaimer, .demo-note { font-size: 11px; }
 	.rail-card { padding: 18px 16px; }.rail-card h3 { font-size: 15px; }.rail-caption { font-size: 11px; }.source-item { padding: 14px 13px; }.source-item strong { font-size: 13px; }.source-item small, .source-foot span, .source-foot em { font-size: 11px; }.compact button { padding: 12px 0; font-size: 13px; }
 	.document-row { min-height: 76px; padding: 16px 18px; font-size: 14px; }
+	.workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 28px; align-items: start; }
+	.workspace-main { min-width: 0; }
+	.workspace-banner { display: flex; align-items: center; gap: 18px; padding: 22px 24px; margin-bottom: 18px; background: linear-gradient(135deg,#152844,#102038); border: 1px solid #2a4263; border-radius: 16px; }
+	.workspace-icon { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: #124b50; color: #72e9df; font-size: 24px; }
+	.workspace-banner strong { display: block; font-size: 18px; margin-bottom: 6px; }.workspace-banner p { margin: 0; color: #91a2ba; font-size: 14px; }
+	.document-list { display: grid; gap: 12px; }.document-row { display: flex; align-items: center; gap: 16px; width: 100%; text-align: left; color: #e3ebf6; background: #111e34; border: 1px solid #2a4263; border-radius: 14px; padding: 18px 20px; cursor: pointer; transition: .2s; }.document-row:hover { border-color: #59d8cf; transform: translateY(-1px); }.document-row .document-icon { flex: 0 0 auto; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 11px; background: #173d4d; color: #6fe5db; font-size: 20px; }.document-row span:nth-child(2) { flex: 1; }.document-row strong { display: block; font-size: 15px; margin-bottom: 5px; }.document-row small { display: block; color: #91a2b9; font-size: 13px; }.document-row em { color: #6bd8cf; font-style: normal; font-size: 12px; }
 </style>
+
+
 
 
 
