@@ -1,0 +1,73 @@
+{
+  "code": "order_handover",
+  "title": "Прием и передача дел и имущества",
+  "doc_kind": "приказ",
+  "signer_default": "Председатель Организации",
+  "description": "Применяется при смене материально ответственных лиц или руководителей подразделений.",
+  "keywords": ["прием дел", "передача имущества", "смена руководителя", "материальная ответственность"],
+  "trigger_phrases": [
+    "Приказ о передаче имущества",
+    "Смена материально ответственного",
+    "Передача дел при увольнении"
+  ],
+  "fields": [
+    {
+      "id": "handover_person_out",
+      "note_no": 1,
+      "label": "ФИО и должность передающего",
+      "type": "person",
+      "required": true,
+      "conditional": null,
+      "hint": "Кто передает дела",
+      "example": "Иванов И.И., начальник отдела",
+      "appears_in": ["point_1"],
+      "same_as": null
+    },
+    {
+      "id": "handover_person_in",
+      "note_no": 2,
+      "label": "ФИО и должность принимающего",
+      "type": "person",
+      "required": true,
+      "conditional": null,
+      "hint": "Кто принимает дела",
+      "example": "Петров П.П., заместитель начальника",
+      "appears_in": ["point_1"],
+      "same_as": null
+    },
+    {
+      "id": "deadline_date",
+      "note_no": 3,
+      "label": "Срок передачи",
+      "type": "date",
+      "required": true,
+      "conditional": null,
+      "hint": "Дата окончания процесса передачи",
+      "example": "20.11.2026",
+      "appears_in": ["point_2"],
+      "same_as": null
+    }
+  ],
+  "optional_blocks": [
+    {
+      "id": "commission_create",
+      "note_no": 4,
+      "label": "Создать инвентаризационную комиссию",
+      "remove_if_empty": true,
+      "renumber_following_points": true
+    }
+  ],
+  "variants": [],
+  "tables": [
+    {
+      "id": "commission_composition",
+      "columns": ["Роль в комиссии", "ФИО", "Должность"],
+      "repeatable_rows": true
+    }
+  ],
+  "validation_rules": [
+    "срок передачи не может быть в прошлом",
+    "если блок комиссии выбран, таблица комиссии обязательна к заполнению"
+  ],
+  "general_rules": ["Документ подписывает Председатель Организации"]
+}

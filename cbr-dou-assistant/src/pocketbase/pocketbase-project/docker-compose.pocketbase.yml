@@ -1,0 +1,40 @@
+# Фрагмент: добавьте в основной docker-compose.yml (секция services + volumes)
+services:
+  pocketbase:
+    build:
+      context: ./pocketbase
+      args:
+        PB_VERSION: ${PB_VERSION:-0.22.21}
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: ${BACKEND_URL:-http://fastapi:8000}
+      SEED_EMPLOYEE_EMAIL: ${SEED_EMPLOYEE_EMAIL:-employee@test.local}
+      SEED_EMPLOYEE_PASSWORD: ${SEED_EMPLOYEE_PASSWORD:?required}
+      SEED_METHODOLOGIST_EMAIL: ${SEED_METHODOLOGIST_EMAIL:-methodologist@test.local}
+      SEED_METHODOLOGIST_PASSWORD: ${SEED_METHODOLOGIST_PASSWORD:?required}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@test.local}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?required}
+      SEED_BACKEND_EMAIL: ${SEED_BACKEND_EMAIL:-backend@test.local}
+      SEED_BACKEND_PASSWORD: ${SEED_BACKEND_PASSWORD:?required}
+    volumes:
+      - pb_data:/pb/pb_data
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8090/api/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  fastapi:
+    # ... ваш сервис
+    environment:
+      PB_URL: http://pocketbase:8090
+      PB_SERVICE_EMAIL: ${SEED_BACKEND_EMAIL:-backend@test.local}
+      PB_SERVICE_PASSWORD: ${SEED_BACKEND_PASSWORD:?required}
+    depends_on:
+      pocketbase:
+        condition: service_healthy
+
+volumes:
+  pb_data:
