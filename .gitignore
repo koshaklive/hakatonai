@@ -1,0 +1,9 @@
+.env
+**/.env
+pycache/
+*.pyc
+.pytest_cache/
+.cache/
+*.sqlite
+qdrant_data/
+indexes/

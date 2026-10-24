@@ -1,0 +1,66 @@
+{
+  "code": "order_commissioning",
+  "title": "Ввод в эксплуатацию ИС",
+  "doc_kind": "приказ",
+  "signer_default": "Заместитель Председателя Организации",
+  "description": "Применяется при вводе в промышленную или опытную эксплуатацию информационных систем (п. 9.5 Инструкции).",
+  "keywords": [
+    "ВВОД",
+    "ЭКСПЛУАТАЦИЯ",
+    "ИС",
+    "ИНФОРМАЦИОННАЯ СИСТЕМА"
+  ],
+  "trigger_phrases": [
+    "Сделай приказ на ввод ИС",
+    "Нужно ввести систему в эксплуатацию"
+  ],
+  "fields": [
+    {
+      "id": "commissioning_doc",
+      "note_no": 2,
+      "label": "Документ о готовности",
+      "type": "text",
+      "required": true,
+      "conditional": null,
+      "choices": [],
+      "hint": "текст из «Примечаний»",
+      "example": "акт от 10.10.2026 № 1",
+      "appears_in": [
+        "preamble"
+      ],
+      "same_as": null
+    }
+  ],
+  "optional_blocks": [
+    {
+      "id": "cancel_old",
+      "note_no": 5,
+      "label": "Признать утратившим силу",
+      "remove_if_empty": true,
+      "renumber_following_points": true
+    }
+  ],
+  "variants": [
+    {
+      "id": "sing_plural",
+      "note_no": 1,
+      "options": [
+        "проекту",
+        "проектам"
+      ],
+      "agree_across": [
+        "title",
+        "preamble",
+        "point_1"
+      ]
+    }
+  ],
+  "tables": [],
+  "validation_rules": [
+    "дата ввода не раньше даты документа о готовности",
+    "наименования в заголовке, п.1 и приложении совпадают"
+  ],
+  "general_rules": [
+    "Заместитель председателя подписывает приказы данного типа"
+  ]
+}
