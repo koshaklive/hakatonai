@@ -30,13 +30,14 @@
 	let uploadDocumentId = '';
 	let uploadStatus = '';
 
-	function authHeaders(): Record<string, string> { return token ? { Authorization: `Bearer ${token}` } : {}; }
-	async function pb(path: string, init: RequestInit = {}) { const headers: Record<string, string> = { 'Content-Type': 'application/json', ...authHeaders() }; if (init.headers) Object.assign(headers, init.headers as Record<string, string>); return fetch(`${api}${path}`, { ...init, headers }); }
+	function backendHeaders(): Record<string, string> { return token ? { Authorization: `Bearer ${token}` } : {}; }
+	function pbHeaders(): Record<string, string> { return token ? { Authorization: token } : {}; }
+	async function pb(path: string, init: RequestInit = {}) { const headers: Record<string, string> = { 'Content-Type': 'application/json', ...pbHeaders() }; if (init.headers) Object.assign(headers, init.headers as Record<string, string>); return fetch(`${api}${path}`, { ...init, headers }); }
 	async function login() {
 		authError = '';
 		try {
 			const res = await fetch(`${api}/collections/users/auth-with-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity, password }) });
-			if (res.status === 401 || !res.ok) throw new Error('Неверная почта или пароль');
+			if (!res.ok) { const detail = await res.json().catch(() => ({})); throw new Error(detail.message || 'Неверная почта или пароль'); }
 			const data = await res.json(); token = data.token; user = data.record; localStorage.setItem('pb_token', token); localStorage.setItem('pb_user', JSON.stringify(user)); showAuth = false; await ensureSession(); await loadDocuments();
 		} catch (e) { authError = e instanceof Error ? e.message : 'Не удалось войти'; }
 	}
@@ -66,7 +67,7 @@
 			if (!sessionId) throw new Error('Сначала войдите через профиль');
 			let data: any;
 			try { data = await streamQuery(message); } catch {
-				const res = await fetch(`${backendUrl}/chat`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ session_id: sessionId, message }) });
+			const res = await fetch(`${backendUrl}/chat`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', ...backendHeaders() }, body: JSON.stringify({ session_id: sessionId, message }) });
 				if (res.status === 401) { handle401(); throw new Error('Нужна повторная авторизация'); }
 				if (res.status === 503) throw new Error('AI-сервис временно недоступен (503)');
 				if (!res.ok) throw new Error(`Ошибка AI-сервиса: ${res.status}`);
@@ -77,7 +78,7 @@
 		finally { clearTimeout(timer); isLoading = false; }
 	}
 	async function streamQuery(message: string) {
-		const res = await fetch(`${backendUrl}/chat/stream`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ session_id: sessionId, message }) });
+		const res = await fetch(`${backendUrl}/chat/stream`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...backendHeaders() }, body: JSON.stringify({ session_id: sessionId, message }) });
 		if (!res.ok || !res.body) throw new Error(`Ошибка AI-сервиса: ${res.status}`);
 		const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let answer = ''; let final: any = {};
 		while (true) { const part = await reader.read(); if (part.done) break; buffer += decoder.decode(part.value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || ''; for (const line of lines) { if (!line.startsWith('data:')) continue; try { const data = JSON.parse(line.slice(5).trim()); if (data.token || data.text || data.content) answer += data.token || data.text || data.content; if (data.answer || data.sources || data.no_answer) final = { ...final, ...data }; } catch { /* ignore keepalive */ } } }
@@ -85,11 +86,11 @@
 	}
 	async function openSource(source: Source) {
 		selectedSource = source; selectedChunk = 'Загрузка полного текста…';
-		try { const res = await fetch(`${backendUrl}/chunks/${encodeURIComponent(source.point)}`, { headers: authHeaders() }); if (res.status === 401) return handle401(); if (!res.ok) throw new Error('Пункт недоступен'); const data = await res.json(); selectedChunk = data.text || data.text_preview || 'Текст отсутствует'; } catch (e) { selectedChunk = e instanceof Error ? e.message : 'Не удалось загрузить пункт'; }
+		try { const res = await fetch(`${backendUrl}/chunks/${encodeURIComponent(source.point)}`, { headers: backendHeaders() }); if (res.status === 401) return handle401(); if (!res.ok) throw new Error('Пункт недоступен'); const data = await res.json(); selectedChunk = data.text || data.text_preview || 'Текст отсутствует'; } catch (e) { selectedChunk = e instanceof Error ? e.message : 'Не удалось загрузить пункт'; }
 	}
 	function markdown(text: string) { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br>'); }
 	async function feedback(message: Message, rating: 'up' | 'down') { if (!token || !user?.id) { showAuth = true; return; } await pb('/collections/feedback/records', { method: 'POST', body: JSON.stringify({ user: user.id, message: message.id || '', rating }) }); }
-	async function uploadDocumentVersion() { if (!uploadFile || !uploadDocumentId || !token || !user || !['admin', 'methodologist'].includes(user.role)) return; uploadStatus = 'Загрузка…'; const form = new FormData(); form.append('file', uploadFile); form.append('document', uploadDocumentId); form.append('version_label', uploadVersionLabel); form.append('status', 'draft'); form.append('uploaded_by', user.id); const res = await fetch(`${api}/collections/document_versions/records`, { method: 'POST', headers: authHeaders(), body: form }); uploadStatus = res.ok ? 'Версия загружена и отправлена на индексацию' : 'Не удалось загрузить версию'; if (res.ok) await loadDocuments(); }
+	async function uploadDocumentVersion() { if (!uploadFile || !uploadDocumentId || !token || !user || !['admin', 'methodologist'].includes(user.role)) return; uploadStatus = 'Загрузка…'; const form = new FormData(); form.append('file', uploadFile); form.append('document', uploadDocumentId); form.append('version_label', uploadVersionLabel); form.append('status', 'draft'); form.append('uploaded_by', user.id); const res = await fetch(`${api}/collections/document_versions/records`, { method: 'POST', headers: pbHeaders(), body: form }); uploadStatus = res.ok ? 'Версия загружена и отправлена на индексацию' : 'Не удалось загрузить версию'; if (res.ok) await loadDocuments(); }
 	onMount(async () => { token = localStorage.getItem('pb_token') || ''; try { user = JSON.parse(localStorage.getItem('pb_user') || 'null'); } catch { user = null; } try { const health = await fetch(`${backendUrl}/health`); connectionState = health.ok ? 'AI-сервис доступен' : 'AI-сервис требует запуска'; } catch { connectionState = 'AI-сервис недоступен'; } if (token) { try { await ensureSession(); await loadDocuments(); } catch { handle401(); } } });
 </script>
 
