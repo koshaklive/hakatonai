@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -64,6 +65,13 @@ class ChatRequest(BaseModel):
 def create_app(cfg: Settings | None = None) -> FastAPI:
     cfg = cfg or Settings()
     app = FastAPI(title="DOU RAG service", default_response_class=UTF8JSONResponse)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.middleware("http")
     async def ensure_json_charset(request, call_next):

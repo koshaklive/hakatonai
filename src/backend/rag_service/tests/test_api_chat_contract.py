@@ -70,6 +70,10 @@ def test_chat_and_stream_accept_json_contract_and_share_session_history(monkeypa
     monkeypatch.setattr(Audit, "chat", lambda *args, **kwargs: None)
 
     with TestClient(api.create_app(cfg)) as client:
+        options_response = client.options(
+            "/chat",
+            headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST"},
+        )
         chat_response = client.post("/chat", json={
             "message": "Какой срок рассмотрения приказа?",
             "history": [],
@@ -81,6 +85,8 @@ def test_chat_and_stream_accept_json_contract_and_share_session_history(monkeypa
             "conversation_id": "chat-contract-test",
         })
 
+    assert options_response.status_code == 200
+    assert options_response.headers.get("access-control-allow-origin") in {"*", "http://localhost:3000"}
     assert chat_response.status_code == 200
     assert chat_response.json()["conversation_id"] == "chat-contract-test"
     assert chat_response.json()["answer"] == "Обычный ответ"
