@@ -33,7 +33,7 @@ MODE_PROMPTS = {
     "summarize": "Сделай краткий маркированный конспект (до 7 пунктов) на основе найденных фрагментов. Не теряй числа, сроки и ответственных лиц. Запрещено использовать информацию вне фрагментов.",
     "checklist": "Опиши алгоритм действий в виде нумерованных шагов. К каждому шагу обязательно добавляй ссылку на соответствующий пункт инструкции. Строго на основе фрагментов.",
     "compare": "Сравни запрошенные сущности на основе найденных фрагментов. Сформируй ответ в виде Markdown-таблицы (2-3 строки) с указанием пунктов-источников.",
-    "default": "Ответь на вопрос пользователя, опираясь только на предоставленные фрагменты. Обязательно указывай ссылки на пункты. Запрещено придумывать информацию."
+    "default": "Ответь на вопрос пользователя, опираясь только на предоставленные фрагменты. Обязательно указывай ссылки на пункты. Запрещено придумывать информацию. Твой ответ по умолчанию должен быть не длиннее 4 предложений или 80 слов. Сначала пиши сам ответ, а затем указывай ссылки в формате [п. X.Y]. Более подробный ответ давай, только если пользователь явно об этом просит."
 }
 REWRITE = ("Перепиши последний вопрос пользователя в самостоятельный вопрос, понятный без истории диалога. "
            "Сохрани все числа, даты и номера пунктов. Верни только текст вопроса, без пояснений.")
@@ -62,6 +62,7 @@ class ChatAnswer:
     max_relevance: float = 0.0
     dropped_refs: list[str] = field(default_factory=list)
     context: list[str] = field(default_factory=list)
+    context_text: str = ""
     timings_ms: dict[str, int] = field(default_factory=dict)
     clarification: dict[str, Any] | None = None
     gray_zone: bool = False
@@ -84,12 +85,12 @@ def to_api(a: ChatAnswer) -> dict[str, Any]:
 
 
 def load_calibration(cfg: Settings) -> tuple[float, float]:
-    low = high = cfg.rel_threshold
     p = Path(cfg.calibration_file)
     if p.exists():
         d = json.loads(p.read_text(encoding="utf-8"))
-        low, high = float(d["gray_low"]), float(d["gray_high"])
-    return low, high
+        return float(d["gray_low"]), float(d["gray_high"])
+    thr = float(os.getenv("REL_THRESHOLD", cfg.rel_threshold or 0.574))
+    return round(thr - 0.15, 4), round(thr, 4)
 
 
 def check_citations(answer: str, allowed: set[str]) -> tuple[str, list[str], list[str]]:
@@ -208,7 +209,8 @@ class ChatService:
         text, valid, dropped = check_citations(raw, allowed)
         if dropped:
             log.warning("dropped unsupported citations: %s", dropped)
-        kw = dict(query=q, max_relevance=r.max_relevance, dropped_refs=dropped, gray_zone=gray)
+        kw = dict(query=q, max_relevance=r.max_relevance, dropped_refs=dropped, gray_zone=gray,
+                  context_text=build_context(r.hits))
         if REFUSAL[:30] in raw:
             return self._done(run, answer=REFUSAL, refused=True, reason="llm_refused", sources=[], **kw)
         if self.strict and not valid:

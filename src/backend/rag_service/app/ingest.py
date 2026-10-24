@@ -7,6 +7,7 @@ import logging
 import tempfile
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import numpy as np
 
@@ -32,22 +33,52 @@ def make_embedder(cfg: Settings):  # noqa: ANN201
         return None
 
 
-def build_index(cfg: Settings, raw: list[dict[str, Any]], embedder: Any = None) -> dict[str, Any]:
-    """Validate → embed → (re)build Qdrant → write chunks → flip the active pointer. Old index stays live until the end."""
+def build_index(cfg: Settings, raw: list[dict[str, Any]], embedder: Any = None, *,
+                index_name: str | None = None, activate: bool = True,
+                build_qdrant: bool = True) -> dict[str, Any]:
+    """Validate and persist an index; optionally stage it without activating it."""
     v = validate(raw)
     chunks, report = v["indexable"], v["report"]
-    label, sl = report["version"], slug(report["version"])
+    label = report["version"]
+    sl = index_name or slug(label)
     vecs = embedder.embed([c["text"] for c in chunks]) if embedder is not None else None  # slow step first
     out = cfg.index_dir / sl
     save_chunks(out, chunks)
     if vecs is not None:
         np.save(out / "vectors.npy", vecs)
-        if cfg.use_qdrant:
+        if cfg.use_qdrant and build_qdrant:
             QdrantDense.build(cfg.qdrant_path, f"chunks_{sl}", chunks, vecs)
-    Registry(cfg.index_dir).activate(sl, label, len(chunks))
+    if activate:
+        Registry(cfg.index_dir).activate(sl, label, len(chunks))
     report.update(dense=vecs is not None, stemmer=stemmer_name())
+    report["index_name"] = sl
     log.info("indexed %s: %s", label, report)
     return report
+
+
+def load_index(cfg: Settings, index_name: str, *, prefer_numpy: bool = False) -> LoadedIndex:
+    """Load a specific persisted version without changing the active registry pointer."""
+    d = cfg.index_dir / index_name
+    chunks = load_chunks_dir(d)
+    dense = None
+    vectors_file = d / "vectors.npy"
+    if cfg.dense_enabled:
+        if prefer_numpy and vectors_file.exists():
+            dense = NumpyDense([c["id"] for c in chunks], np.load(vectors_file), [c["access_level"] for c in chunks])
+        else:
+            try:
+                if cfg.use_qdrant and Path(cfg.qdrant_path).exists():
+                    q = QdrantDense(cfg.qdrant_path, f"chunks_{index_name}")
+                    dense = q if q.client.collection_exists(q.collection) else None
+                if dense is None and vectors_file.exists():
+                    dense = NumpyDense([c["id"] for c in chunks], np.load(vectors_file),
+                                       [c["access_level"] for c in chunks])
+            except Exception as e:  # noqa: BLE001
+                log.warning("dense index unavailable for %s: %s", index_name, e)
+                if vectors_file.exists():
+                    dense = NumpyDense([c["id"] for c in chunks], np.load(vectors_file),
+                                       [c["access_level"] for c in chunks])
+    return build_lexical(chunks, cfg, dense)
 
 
 def load_active(cfg: Settings) -> LoadedIndex | None:
@@ -55,19 +86,7 @@ def load_active(cfg: Settings) -> LoadedIndex | None:
     reg = Registry(cfg.index_dir).read()
     if not reg["active"]:
         return None
-    d = cfg.index_dir / reg["active"]
-    chunks = load_chunks_dir(d)
-    dense = None
-    if cfg.dense_enabled:
-        try:
-            if cfg.use_qdrant and (Path(cfg.qdrant_path)).exists():
-                q = QdrantDense(cfg.qdrant_path, f"chunks_{reg['active']}")
-                dense = q if q.client.collection_exists(q.collection) else None
-            if dense is None and (d / "vectors.npy").exists():
-                dense = NumpyDense([c["id"] for c in chunks], np.load(d / "vectors.npy"), [c["access_level"] for c in chunks])
-        except Exception as e:  # noqa: BLE001
-            log.warning("dense index unavailable: %s", e)
-    return build_lexical(chunks, cfg, dense)
+    return load_index(cfg, reg["active"])
 
 
 def ingest_version(cfg: Settings, version_id: str, embedder: Any = None) -> dict[str, Any]:

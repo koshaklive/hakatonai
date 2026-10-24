@@ -1,7 +1,18 @@
 import re
 
+_REFORMULATE_WORDS = {
+    "покороче", "проще", "понятнее", "объясни", "поясни", "еще", "ещё", "раз",
+    "на", "примере", "сделай", "ответ", "пожалуйста", "можно", "чуть", "немного",
+    "повтори", "сформулируй", "это", "снова",
+}
+
+
 def analyze_intent(query: str) -> dict:
     q = query.strip().lower()
+    words = re.findall(r"[а-яё]+", q)
+    if words and any(word in {"покороче", "проще", "понятнее", "объясни", "поясни", "еще", "ещё", "примере"}
+                     for word in words) and set(words) <= _REFORMULATE_WORDS:
+        return {"action": "reformulate", "intent": "reformulate"}
 
     # 1. Защита от коротких запросов (меньше 3 слов и без цифр, похожих на номер пункта)
     if len(q.split()) < 3 and not re.search(r'\d+\.\d+', q):

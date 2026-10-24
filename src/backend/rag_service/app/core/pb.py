@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -30,7 +31,7 @@ class PocketBase:
         r.raise_for_status()
         self._tok = r.json()["token"]
 
-    def _req(self, method: str, path: str, **kw: Any) -> dict[str, Any]:
+    def _request(self, method: str, path: str, **kw: Any) -> httpx.Response:
         with self._lock:
             if not self._tok:
                 self._login()
@@ -41,8 +42,30 @@ class PocketBase:
                     self._login()
                 continue
             r.raise_for_status()
-            return r.json()
+            return r
         raise RuntimeError("unreachable")
+
+    def _req(self, method: str, path: str, **kw: Any) -> dict[str, Any]:
+        return self._request(method, path, **kw).json()
+
+    def get(self, collection: str, record_id: str) -> dict[str, Any]:
+        return self._req("GET", f"/api/collections/{collection}/records/{record_id}")
+
+    def patch(self, collection: str, record_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        return self._req("PATCH", f"/api/collections/{collection}/records/{record_id}", json=data)
+
+    def download(self, record: dict[str, Any], field: str) -> bytes:
+        filename = record.get(field)
+        if isinstance(filename, list):
+            filename = filename[0] if filename else None
+        if not isinstance(filename, str) or not filename.strip():
+            raise ValueError(f"record has no attached file in {field!r}")
+        collection = record.get("collectionName") or "document_versions"
+        record_id = record.get("id")
+        if not record_id:
+            raise ValueError("record has no id for attached file download")
+        path = f"/api/files/{quote(collection, safe='')}/{quote(str(record_id), safe='')}/{quote(filename, safe='')}"
+        return self._request("GET", path).content
 
     def create(self, collection: str, data: dict[str, Any]) -> dict[str, Any]:
         return self._req("POST", f"/api/collections/{collection}/records", json=data)

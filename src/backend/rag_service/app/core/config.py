@@ -45,7 +45,7 @@ class Settings:
     
     rel_w_dense: float = field(default_factory=lambda: float(os.getenv("REL_W_DENSE", "0.7")))
     rel_w_bm25: float = field(default_factory=lambda: float(os.getenv("REL_W_BM25", "0.3")))
-    rel_threshold: float = field(default_factory=lambda: float(os.getenv("REL_THRESHOLD", "0.0")))
+    rel_threshold: float = field(default_factory=lambda: float(os.getenv("REL_THRESHOLD", "0.574")))
     bm25_k1: float = field(default_factory=lambda: float(os.getenv("BM25_K1", "1.5")))
     bm25_b: float = field(default_factory=lambda: float(os.getenv("BM25_B", "0.75")))
     abbr_min_df: int = field(default_factory=lambda: int(os.getenv("ABBR_MIN_DF", "2")))

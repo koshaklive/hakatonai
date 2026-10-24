@@ -25,6 +25,10 @@ class Registry:
         data["versions"][slug] = {"label": label, "chunks": chunks,
                                   "indexed_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         data["active"] = slug
+        self.restore(data)
+
+    def restore(self, data: dict[str, Any]) -> None:
+        """Atomically persist a registry snapshot, including the active pointer."""
         self.dir.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
