@@ -9,6 +9,7 @@
 	let showAuth = false;
 	let authMode: 'register' | 'login' = 'register';
 	let answeredQueries = 0;
+	let selectedDocument = '';
 
 	const navItems = [
 		{ label: 'Главная', icon: '⌂' },
@@ -62,6 +63,11 @@
 	function copyAnswer() {
 		copied = true;
 		setTimeout(() => (copied = false), 1500);
+	}
+
+	function openSource(title: string) {
+		selectedDocument = title;
+		activeNav = 'Документы';
 	}
 </script>
 
@@ -126,7 +132,7 @@
 				</section>
 
 				<aside class="right-rail">
-					<div class="rail-card"><h3>▥ Источники ответа</h3>{#if visibleSources.length}<p class="rail-caption">{visibleSources.length} документа · действующие версии</p>{#each visibleSources as source}<div class="source-item"><div><strong>{source.title}</strong><small>{source.meta}</small></div><div class="source-foot"><span>Действует</span><em>{source.score}</em></div></div>{/each}<p class="rail-caption">Релевантность обновляется вместе с запросом.</p>{:else}<div class="empty-rail">Источники появятся после первого вопроса.</div>{/if}</div>
+					<div class="rail-card"><h3>▥ Источники ответа</h3>{#if visibleSources.length}<p class="rail-caption">{visibleSources.length} документа · действующие версии</p>{#each visibleSources as source}<button class="source-item" onclick={() => openSource(source.title)}><div><strong>{source.title}</strong><small>{source.meta}</small></div><div class="source-foot"><span>Действует</span><em>{source.score}</em></div><span class="source-open">Открыть документ ↗</span></button>{/each}<p class="rail-caption">Нажмите на источник, чтобы открыть документ.</p>{:else}<div class="empty-rail">Источники появятся после первого вопроса.</div>{/if}</div>
 					<div class="rail-card compact"><h3>⌁ Быстрые действия</h3><button class="interactive-button" onclick={() => (activeNav = 'Документы')}>Открыть документы <span>↗</span></button><button class="interactive-button" onclick={() => (activeNav = 'Шаблоны')}>Выбрать шаблон <span>↗</span></button></div>
 				</aside>
 			</div>
@@ -136,7 +142,7 @@
 					<section class="workspace-main">
 						<div class="workspace-banner"><span class="workspace-icon">{navItems.find((item) => item.label === activeNav)?.icon}</span><div><strong>{activeNav === 'Документы' ? 'Единый каталог документов' : activeNav === 'Шаблоны' ? 'Шаблоны для ежедневной работы' : activeNav === 'Черновики' ? 'Черновики и подготовленные материалы' : activeNav === 'История' ? 'История запросов и ответов' : activeNav === 'Аналитика' ? 'Аналитика использования знаний' : activeNav === 'Команда' ? 'Команда и уровни доступа' : 'Настройки рабочего пространства'}</strong><p>Здесь можно продолжить работу с внутренними материалами.</p></div></div>
 						{#if activeNav === 'Документы'}
-							<div class="document-list"><div class="empty-rail">Документы появятся после подключения рабочего пространства.</div></div>
+							{#if selectedDocument}<div class="document-detail"><button class="back-link" onclick={() => (selectedDocument = '')}>← Все документы</button><div class="document-detail-head"><span class="document-icon">▣</span><div><h2>{selectedDocument}</h2><p>Источник ответа · действующая версия</p></div><span class="status-chip">Действует</span></div><div class="document-detail-body"><h3>О документе</h3><p>Документ открыт из ответа AI. Здесь сотрудник может ознакомиться с полным содержанием, реквизитами и связанными разделами.</p><div class="detail-placeholder">Содержимое документа появится после подключения хранилища документов.</div></div></div>{:else}<div class="document-list"><div class="empty-rail">Документы появятся после подключения рабочего пространства.</div></div>{/if}
 						{:else if activeNav === 'Шаблоны'}
 							<div class="template-grid"><div class="template-card"><span>▤</span><strong>Служебная записка</strong><small>ЗАК-01 · Активен</small><button class="interactive-button secondary" onclick={() => { activeNav = 'AI-помощник'; draft = 'Создать черновик служебной записки'; }}>Использовать</button></div><div class="template-card"><span>▤</span><strong>Заявка на командировку</strong><small>КОМ-02 · Активен</small><button class="interactive-button secondary" onclick={() => { activeNav = 'AI-помощник'; draft = 'Подготовить заявку на командировку'; }}>Использовать</button></div></div>
 						{:else if activeNav === 'Черновики'}
@@ -182,6 +188,8 @@
 	.interactive-button { position: relative; overflow: hidden; isolation: isolate; min-width: 142px; border: 1px solid #315176; border-radius: 999px; background: #12213b; color: #dce8f4; padding: 9px 14px; font-size: 10px; font-weight: 650; cursor: pointer; transition: color .25s, border-color .25s, transform .25s; }.interactive-button::before { content: ''; position: absolute; z-index: -1; width: 0; height: 100%; left: 0; top: 0; border-radius: inherit; background: #58ded1; transition: all .3s ease; }.interactive-button:hover { color: #071a25; border-color: #58ded1; transform: translateY(-1px); }.interactive-button:hover::before { width: 100%; height: 100%; left: 0; top: 0; }	@media (max-width: 900px) { .sidebar { width: 205px; min-width: 205px; }.page-wrap { padding: 24px 18px 35px; }.layout-grid { grid-template-columns: minmax(0,1fr) 220px; }.user-info { display:none; }.topbar { padding: 0 18px; } }
 	@media (max-width: 700px) { .sidebar { position: fixed; z-index: 10; left: -240px; top: 0; bottom: 0; transition: left .2s ease; box-shadow: 10px 0 30px rgba(0,0,0,.4); }.sidebar.mobile-open { left: 0; }.mobile-menu { display:block; border:0; color:#a8b7cc; background:transparent; font-size:18px; cursor:pointer; }.topbar { height: 58px; padding: 0 12px; gap: 9px; }.search { height: 31px; }.search kbd { display:none; }.top-actions { gap: 5px; }.icon-btn { display:none; }.page-wrap { padding: 20px 12px 30px; }.page-heading { align-items: flex-start; }.page-heading .ghost-button { padding: 7px 9px; }.layout-grid { display: block; }.workspace-grid { display: block; }.context-card { margin-top: 12px; }.template-grid { grid-template-columns: 1fr; }.metric-fields { grid-template-columns: 1fr; }.right-rail { margin-top: 12px; }.right-rail .rail-card:first-child { order: 0; }.answer-actions { flex-wrap: wrap; }.answer-actions .route { flex-basis: 100%; }.greeting { padding: 11px; }.question-bubble { line-height: 1.4; }.answer-card { padding: 14px 12px 11px; }.step p { font-size: 9px; }.welcome-card { padding: 28px 16px; min-height: 220px; } }
 </style>
+
+
 
 
 
