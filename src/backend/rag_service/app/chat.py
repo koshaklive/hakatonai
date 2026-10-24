@@ -14,6 +14,7 @@ from app.clarify import clarify_by_rules, detect_doc_type
 from app.core.chunks import strip_prefix
 from app.core.config import Settings
 from app.core.intent import analyze_intent
+from app.core.search import normalize_query, passes_hybrid_filter, query_evidence
 from app.search.hybrid import Hit, Searcher
 
 log = logging.getLogger("chat")
@@ -33,6 +34,7 @@ MODE_PROMPTS = {
     "summarize": "Сделай краткий маркированный конспект (до 7 пунктов) на основе найденных фрагментов. Не теряй числа, сроки и ответственных лиц. Запрещено использовать информацию вне фрагментов.",
     "checklist": "Опиши алгоритм действий в виде нумерованных шагов. К каждому шагу обязательно добавляй ссылку на соответствующий пункт инструкции. Строго на основе фрагментов.",
     "compare": "Сравни запрошенные сущности на основе найденных фрагментов. Сформируй ответ в виде Markdown-таблицы (2-3 строки) с указанием пунктов-источников.",
+    "frustration": "Ответь в 1–2 предложениях, без извинений. Спокойно перейди к сути вопроса или кратко уточни вид документа.",
     "default": "Ответь на вопрос пользователя, опираясь только на предоставленные фрагменты. Обязательно указывай ссылки на пункты. Запрещено придумывать информацию. Твой ответ по умолчанию должен быть не длиннее 4 предложений или 80 слов. Сначала пиши сам ответ, а затем указывай ссылки в формате [п. X.Y]. Более подробный ответ давай, только если пользователь явно об этом просит."
 }
 REWRITE = ("Перепиши последний вопрос пользователя в самостоятельный вопрос, понятный без истории диалога. "
@@ -168,14 +170,24 @@ class ChatService:
 
     def prepare(self, run: Run, question: str, history: list[dict[str, str]] | None, max_access: int
                 ) -> tuple[ChatAnswer | None, dict[str, Any]]:
-        question = question.strip()[:self.cfg.query_max_len]
+        question = normalize_query(question.strip()[:self.cfg.query_max_len])
         if not question:
             return self._done(run, answer=REFUSAL, refused=True, reason="empty_question", query="", sources=[]), {}
+        intent_data = analyze_intent(question)
+        if intent_data.get("intent") == "frustration":
+            previous_question = next((message["content"] for message in reversed(history or [])
+                                      if message["role"] == "user"), "")
+            if not previous_question:
+                return self._done(run, answer="Уточните, пожалуйста, вид документа или вопрос по Инструкции.",
+                                  refused=False, reason="frustration", query=question, sources=[]), {}
+            question_for_search = previous_question
+        else:
+            question_for_search = question
         cl = clarify_by_rules(question, history)
         if cl:
             return self._done(run, answer=cl["question"], refused=False, reason="clarification", query=question,
                               sources=[], clarification=cl), {}
-        q = self.rewrite(run, question, history)
+        q = self.rewrite(run, question_for_search, history)
         run.tm["rewrite"] = int((time.perf_counter() - run.t0) * 1000)
         r = self.searcher.search(q, max_access=max_access)
         run.tm["search"] = r.timings_ms.get("total", 0)
@@ -185,20 +197,34 @@ class ChatService:
                 "text_preview": strip_prefix(h.text)[:PREVIEW]} for h in r.hits]
         run.ctx.extend(f"{h.point}[{h.source[0]}]" for h in r.hits)
         direct = r.method == "direct"
-        if not direct and (not r.hits or r.max_relevance < self.low or r.max_relevance <= 0):
+        dense_score, bm25_score, keyword_overlap = query_evidence(q, r.hits, ix.abbrevs)
+        gray = not direct and self.low <= r.max_relevance < self.high
+        passes_filter = passes_hybrid_filter(
+            dense_score,
+            bm25_score,
+            keyword_overlap,
+            dense_min=self.cfg.dense_min_relevance,
+            bm25_min=self.cfg.bm25_min_relevance,
+            overlap_min=self.cfg.keyword_overlap_min,
+        )
+        if not direct and (not r.hits or (not passes_filter and not gray)):
             return self._done(run, answer="В базе знаний информации нет, обратитесь в Департамент ДОУ.",
                               refused=True, reason="below_threshold", query=q, sources=[],
                               max_relevance=r.max_relevance), {}
-        gray = not direct and r.max_relevance < self.high
-        if gray:
-            closest = [h.point for h in r.hits[:3] if h.point]
-            pts = ", ".join(closest)
-            ans = f"Точного ответа не нашёл. Возможно, вам подойдут пункты: {pts}. Пожалуйста, уточните запрос."
-            return self._done(run, answer=ans, refused=True, reason="gray_zone", query=q, sources=src[:3],
-                              max_relevance=r.max_relevance), {}
-        intent_data = analyze_intent(question)
         mode = intent_data.get("mode", "default")
         sys_prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS["default"])
+        if gray:
+            closest = ", ".join(hit.point for hit in r.hits[:3])
+            sys_prompt += (
+                " Найденные пункты могут не полностью отвечать на вопрос: сформулируй ответ по ним, "
+                "обязательно добавь оговорку «возможно, неполно» и укажи 2–3 ближайших пункта: "
+                f"{closest}."
+            )
+        if re.search(r"визир", question, re.I):
+            sys_prompt += (
+                " Если запрашиваемое подразделение отсутствует в извлеченном контексте Матрицы, "
+                "явно укажи, что сведений о нем в базе нет."
+            )
         messages = [{"role": "system", "content": sys_prompt},
                     {"role": "user", "content": f"Контекст:\n{build_context(r.hits)}\n\nВопрос: {q}"}]
         return None, {"q": q, "r": r, "src": src, "gray": gray, "messages": messages, "mode": mode}
@@ -216,7 +242,8 @@ class ChatService:
         if self.strict and not valid:
             return self._done(run, answer=REFUSAL, refused=True, reason="no_valid_citation", sources=[], **kw)
         used = set(valid)
-        return self._done(run, answer=(GRAY_NOTE if gray else "") + text, refused=False, reason=None,
+        gray_note = "Возможно, ответ неполон; ближайшие пункты: " + ", ".join(h.point for h in r.hits[:3]) + ".\n\n" if gray else ""
+        return self._done(run, answer=gray_note + text, refused=False, reason=None,
                           sources=[s for s in src if s["point"] in used] or src, **kw)
 
     def answer(self, question: str, history: list[dict[str, str]] | None = None, max_access: int = 0) -> ChatAnswer:

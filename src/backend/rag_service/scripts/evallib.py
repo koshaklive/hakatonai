@@ -59,7 +59,7 @@ def build_world(cfg: Settings, dense: bool, rerank: bool = False) -> World:
 
 def searcher(w: World, mode: str = "hybrid", anchors: bool = True) -> Searcher:
     """One Searcher per comparison mode. dense-only = hybrid with BM25 candidates switched off (BM25_K=0)."""
-    cfg = {"lexical": replace(w.cfg, rerank=False),
+    cfg = {"lexical": replace(w.cfg, rerank=False, bm25_k=max(w.cfg.bm25_k, 20)),
            "dense": replace(w.cfg, rerank=False, bm25_k=0),
            "hybrid": replace(w.cfg, rerank=False),
            "rerank": replace(w.cfg, rerank=True)}[mode]

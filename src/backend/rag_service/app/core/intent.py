@@ -10,6 +10,8 @@ _REFORMULATE_WORDS = {
 def analyze_intent(query: str) -> dict:
     q = query.strip().lower()
     words = re.findall(r"[а-яё]+", q)
+    if any(phrase in q for phrase in ("сколько можно ждать", "тормозишь")):
+        return {"action": "search", "intent": "frustration", "mode": "frustration"}
     if words and any(word in {"покороче", "проще", "понятнее", "объясни", "поясни", "еще", "ещё", "примере"}
                      for word in words) and set(words) <= _REFORMULATE_WORDS:
         return {"action": "reformulate", "intent": "reformulate"}

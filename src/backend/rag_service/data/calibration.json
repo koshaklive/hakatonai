@@ -1,0 +1,24 @@
+{
+  "mode": "lexical",
+  "n_pos": 29,
+  "n_ood": 27,
+  "pos_p5": 0.2376,
+  "ood_p95": 0.5987,
+  "margin": -0.3611,
+  "gray_zone": true,
+  "threshold": 0.4181,
+  "gray_low": 0.2376,
+  "gray_high": 0.5987,
+  "n_positive_gold": 46,
+  "gold_false_rejects": 1,
+  "relevance_distribution_before_filter": {
+    "below_low": 14,
+    "gray_zone": 26,
+    "above_high": 10
+  },
+  "relevance_distribution_after_filter": {
+    "below_low": 12,
+    "gray_zone": 26,
+    "above_high": 10
+  }
+}

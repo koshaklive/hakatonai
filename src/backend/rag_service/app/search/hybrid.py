@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -10,6 +11,7 @@ import numpy as np
 
 from app.core.chunks import Chunk, point_of, strip_prefix
 from app.core.config import Settings
+from app.core.search import normalize_query
 from app.search.anchors import Anchor, match_anchors
 from app.search.direct import extract_points
 from app.search.index import LoadedIndex
@@ -101,6 +103,7 @@ class Searcher:
     def search(self, query: str, top_k: int | None = None, max_access: int = 1,
                filters: dict[str, Any] | None = None) -> SearchResult:
         """Run the full retrieval pipeline for one (already standalone) query."""
+        query = normalize_query(query)
         cfg, ix = self.cfg, self.index
         limit = min(top_k or cfg.fragment_limit, cfg.fragment_limit)
         tm: dict[str, int] = {}
@@ -112,6 +115,7 @@ class Searcher:
         if direct:
             hits = [self._hit(p, 1.0, "direct") for p in direct][:limit]
             hits = self._related(hits, limit)
+            hits = self._visa_anchors(query, hits, max_access, limit)
             tm["total"] = int((time.perf_counter() - t0) * 1000)
             return SearchResult(query, "direct", hits, 1.0, ix.version, tm)
 
@@ -168,9 +172,36 @@ class Searcher:
 
         # 7) anchors (forced) + related, within the global fragment limit
         hits = self._compose(query, core, limit, max_access)
+        hits = self._visa_anchors(query, hits, max_access, limit)
         tm["total"] = int((time.perf_counter() - t0) * 1000)
         mx = max((h.relevance for h in core), default=0.0)
         return SearchResult(query, method, hits, mx, ix.version, tm)
+
+    def _visa_anchors(self, query: str, hits: list[Hit], max_access: int, limit: int) -> list[Hit]:
+        if not re.search(r"визир", query, re.I):
+            return hits
+        points = self.index.points
+        forced = (["10.6"] if "10.6" in points else []) + sorted(
+            point for point in points if point.startswith("MTX.")
+        )
+        result = list(hits)
+        present = {hit.point for hit in result}
+        for point in forced:
+            if point in present or self.index.point_chunk(point)["access_level"] > max_access:
+                continue
+            if len(result) >= limit:
+                if point == "10.6":
+                    removable = next((i for i in range(len(result) - 1, -1, -1)
+                                      if result[i].point != "10.6"), None)
+                else:
+                    removable = next((i for i in range(len(result) - 1, -1, -1)
+                                      if result[i].point != "10.6" and result[i].source != "anchor"), None)
+                if removable is None:
+                    break
+                result.pop(removable)
+            result.append(self._hit(point, 0.0, "anchor"))
+            present.add(point)
+        return result
 
     def _extras(self, query: str, core: list[Hit], limit: int, max_access: int) -> list[Hit]:
         """Forced anchors and related refs that are not already inside the final top-`limit` window."""
