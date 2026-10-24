@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+httpx
+pydantic>=2
+qdrant-client
+numpy
+pyyaml
+python-dotenv
+pymorphy3
+pymorphy3-dicts-ru
+sentence-transformers
+jsonschema
+openai
+pytest
