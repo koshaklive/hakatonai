@@ -1,257 +1,102 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-
+	type Source = { point: string; doc?: string; chapter?: string; page?: number; relevance?: number; version?: string; text_preview?: string };
+	type Message = { role: 'user' | 'assistant' | 'error' | 'clarification'; content: string; sources?: Source[]; no_answer?: boolean; id?: string };
+	type Document = { id: string; title?: string; name?: string; description?: string; updated?: string; expand?: any };
+	const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
+	const pbUrl = import.meta.env.VITE_PB_URL || 'http://127.0.0.1:8090';
+	const api = `${pbUrl}/api`;
+	const navItems = [{ label: 'Главная', icon: '⌂' }, { label: 'Документы', icon: '▣' }, { label: 'AI-чат', icon: '✧' }];
 	let activeNav = 'Главная';
-	let query = '';
-	let draft = '';
-	let isLoading = false;
-	let hasAnswer = false;
-	let copied = false;
 	let showMenu = false;
 	let showAuth = false;
-	let authMode: 'register' | 'login' = 'register';
-	let answeredQueries = 0;
-	let selectedDocument = '';
-	let pbSession = '';
-	let chatMessages: { role: string; content: string }[] = [];
-
-	async function saveToPocketBase(message: string, answer: string) {
-		const token = localStorage.getItem('pb_token');
-		if (!token) return;
-		try {
-			let session = pbSession;
-			if (!session) {
-				const created = await fetch(`${pocketbaseUrl}/collections/chat_sessions/records`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ title: message.slice(0, 80), status: 'active' }) });
-				if (created.ok) { const row = await created.json(); session = row.id; pbSession = session; }
-			}
-			if (session) {
-				await fetch(`${pocketbaseUrl}/collections/messages/records`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ session, role: 'user', content: message }) });
-				await fetch(`${pocketbaseUrl}/collections/messages/records`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ session, role: 'assistant', content: answer }) });
-			}
-		} catch { /* keep chat usable if PocketBase is offline */ }
-	}
-
-	const navItems = [
-		{ label: 'Главная', icon: '⌂' },
-		{ label: 'Документы', icon: '▣' },
-		{ label: 'AI-чат', icon: '✧' }
-	];
-	const backendUrl = 'http://localhost:8000';
-	const pocketbaseUrl = 'http://localhost:8090/api';
-	let documents: { id: string; title: string; description?: string; updated?: string }[] = [];
+	let identity = '';
+	let password = '';
+	let authError = '';
+	let token = '';
+	let user: any = null;
+	let sessionId = '';
+	let draft = '';
+	let messages: Message[] = [];
+	let isLoading = false;
+	let errorText = '';
 	let connectionState = 'Проверяю подключение…';
-	onMount(async () => {
-		try { const health = await fetch(`${backendUrl}/health`); connectionState = health.ok ? 'AI и база подключены' : 'AI-сервис требует запуска'; }
-		catch { connectionState = 'AI-сервис недоступен'; }
+	let documents: Document[] = [];
+	let selectedSource: Source | null = null;
+	let selectedChunk = '';
+	let docsLoading = false;
+	let uploadFile: File | null = null;
+	let uploadVersionLabel = '';
+	let uploadStatus = '';
+
+	function authHeaders(): Record<string, string> { return token ? { Authorization: `Bearer ${token}` } : {}; }
+	async function pb(path: string, init: RequestInit = {}) { const headers: Record<string, string> = { 'Content-Type': 'application/json', ...authHeaders() }; if (init.headers) Object.assign(headers, init.headers as Record<string, string>); return fetch(`${api}${path}`, { ...init, headers }); }
+	async function login() {
+		authError = '';
 		try {
-			const token = localStorage.getItem('pb_token');
-			const res = await fetch(`${pocketbaseUrl}/collections/documents/records?sort=-updated&perPage=50`, token ? { headers: { Authorization: token } } : {});
-			if (res.ok) { const data = await res.json(); documents = (data.items ?? []).map((d: any) => ({ id: d.id, title: d.title ?? d.name ?? 'Документ', description: d.description, updated: d.updated })); }
-		} catch { /* PocketBase may require auth or be stopped */ }
-	});
-
-	const sourceSets = {
-		procurement: [
-		{ title: 'Регламент закупок', meta: 'Регламент · v3.2 · Отдел закупок', score: '98% релев.' },
-		{ title: 'Порядок согласования договоров', meta: 'Порядок · v2.4 · Отдел закупок', score: '94% релев.' },
-		{ title: 'Шаблон служебной записки', meta: 'Шаблон · v1.6 · Отдел закупок', score: '91% релев.' }
-		],
-		documentation: [
-			{ title: 'Инструкция по документообороту', meta: 'Инструкция · v2.1 · ЦДО', score: '97% релев.' },
-			{ title: 'Регламент регистрации документов', meta: 'Регламент · v1.8 · ЦДО', score: '93% релев.' },
-			{ title: 'FAQ для сотрудников', meta: 'База знаний · v1.3 · ЦДО', score: '89% релев.' }
-		],
-		trip: [
-			{ title: 'Положение о командировках', meta: 'Положение · v4.0 · HR', score: '96% релев.' },
-			{ title: 'Порядок согласования поездок', meta: 'Порядок · v2.2 · Финансы', score: '92% релев.' },
-			{ title: 'Заявка на командировку', meta: 'Шаблон · v2.0 · HR', score: '88% релев.' }
-		]
-	};
-	let visibleSources: { title: string; meta: string; score: string }[] = [];
-
-	function submitQuery() {
-		if (!draft.trim()) return;
-		const message = draft;
-		query = message;
-		answeredQueries += 1;
-		visibleSources = query.toLowerCase().includes('командир') ? sourceSets.trip : query.toLowerCase().includes('документ') ? sourceSets.documentation : sourceSets.procurement;
-		draft = '';
-		hasAnswer = true;
-		isLoading = true;
-		setTimeout(() => (isLoading = false), 900);
-		saveToPocketBase(message, 'Ответ сформирован на основе доступных документов.');
+			const res = await fetch(`${api}/collections/users/auth-with-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity, password }) });
+			if (res.status === 401 || !res.ok) throw new Error('Неверная почта или пароль');
+			const data = await res.json(); token = data.token; user = data.record; localStorage.setItem('pb_token', token); localStorage.setItem('pb_user', JSON.stringify(user)); showAuth = false; await ensureSession(); await loadDocuments();
+		} catch (e) { authError = e instanceof Error ? e.message : 'Не удалось войти'; }
 	}
-
-	function startNewChat() {
-		query = '';
-		visibleSources = [];
-		hasAnswer = false;
-		draft = '';
+	function logout() { token = ''; user = null; sessionId = ''; localStorage.removeItem('pb_token'); localStorage.removeItem('pb_user'); messages = []; }
+	async function ensureSession() {
+		if (sessionId || !token || !user?.id) return sessionId;
+		const res = await pb('/collections/chat_sessions/records', { method: 'POST', body: JSON.stringify({ user: user.id, title: 'Новый диалог', status: 'active' }) });
+		if (res.status === 401) return handle401();
+		if (!res.ok) throw new Error('Не удалось создать сессию');
+		sessionId = (await res.json()).id; return sessionId;
 	}
-
-	function copyAnswer() {
-		copied = true;
-		setTimeout(() => (copied = false), 1500);
+	function handle401() { logout(); showAuth = true; authError = 'Сессия истекла. Войдите снова.'; }
+	async function loadDocuments() {
+		docsLoading = true;
+		try {
+			const res = await pb('/collections/documents/records?expand=current_version&sort=-updated&perPage=100');
+			if (res.status === 401) return handle401();
+			if (res.ok) documents = (await res.json()).items ?? [];
+		} finally { docsLoading = false; }
 	}
-
-	function openSource(title: string) {
-		selectedDocument = title;
-		activeNav = 'Документы';
+	async function submitQuery() {
+		const message = draft.trim(); if (!message || isLoading) return;
+		draft = ''; errorText = ''; messages = [...messages, { role: 'user', content: message }]; isLoading = true;
+		const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 30000);
+		try {
+			await ensureSession();
+			if (!sessionId) throw new Error('Сначала войдите через профиль');
+			const res = await fetch(`${backendUrl}/chat`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ session_id: sessionId, message }) });
+			if (res.status === 401) { handle401(); throw new Error('Нужна повторная авторизация'); }
+			if (res.status === 503) throw new Error('AI-сервис временно недоступен (503)');
+			if (!res.ok) throw new Error(`Ошибка AI-сервиса: ${res.status}`);
+			const data = await res.json();
+			messages = [...messages, { role: data.clarification ? 'clarification' : 'assistant', content: data.answer || data.clarification || 'Ответ не найден.', sources: data.no_answer ? [] : (data.sources ?? []), no_answer: data.no_answer }];
+		} catch (e) { const text = e instanceof DOMException && e.name === 'AbortError' ? 'Ответ не получен за 30 секунд.' : e instanceof Error ? e.message : 'Ошибка сети'; errorText = text; messages = [...messages, { role: 'error', content: text }]; }
+		finally { clearTimeout(timer); isLoading = false; }
 	}
+	async function openSource(source: Source) {
+		selectedSource = source; selectedChunk = 'Загрузка полного текста…';
+		try { const res = await fetch(`${backendUrl}/chunks/${encodeURIComponent(source.point)}`, { headers: authHeaders() }); if (res.status === 401) return handle401(); if (!res.ok) throw new Error('Пункт недоступен'); const data = await res.json(); selectedChunk = data.text || data.text_preview || 'Текст отсутствует'; } catch (e) { selectedChunk = e instanceof Error ? e.message : 'Не удалось загрузить пункт'; }
+	}
+	function markdown(text: string) { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br>'); }
+	async function feedback(message: Message, rating: 'up' | 'down') { if (!token || !user?.id) { showAuth = true; return; } await pb('/collections/feedback/records', { method: 'POST', body: JSON.stringify({ user: user.id, message: message.id || '', rating }) }); }
+	async function uploadDocumentVersion() { if (!uploadFile || !token || !user || !['admin', 'methodologist'].includes(user.role)) return; uploadStatus = 'Загрузка…'; const form = new FormData(); form.append('file', uploadFile); form.append('version_label', uploadVersionLabel); form.append('status', 'draft'); form.append('uploaded_by', user.id); const res = await fetch(`${api}/collections/document_versions/records`, { method: 'POST', headers: authHeaders(), body: form }); uploadStatus = res.ok ? 'Версия загружена и отправлена на индексацию' : 'Не удалось загрузить версию'; if (res.ok) await loadDocuments(); }
+	onMount(async () => { token = localStorage.getItem('pb_token') || ''; try { user = JSON.parse(localStorage.getItem('pb_user') || 'null'); } catch { user = null; } try { const health = await fetch(`${backendUrl}/health`); connectionState = health.ok ? 'AI-сервис доступен' : 'AI-сервис требует запуска'; } catch { connectionState = 'AI-сервис недоступен'; } if (token) { try { await ensureSession(); await loadDocuments(); } catch { handle401(); } } });
 </script>
 
-<svelte:head>
-	<title>Свод — AI-помощник</title>
-	<meta name="description" content="Внутренние знания и проверяемые ответы" />
-</svelte:head>
-
+<svelte:head><title>Свод — AI-помощник</title><meta name="description" content="Внутренние знания и проверяемые ответы" /></svelte:head>
 <div class="app-shell">
-	<aside class:mobile-open={showMenu} class="sidebar">
-		<div class="brand"><span class="brand-mark">⌁</span><span class="brand-name">СВОД</span></div>
-		<nav class="main-nav">
-			{#each navItems as item}
-				<button class:active={activeNav === item.label} onclick={() => { activeNav = item.label; showMenu = false; }}>
-					<span class="nav-icon">{item.icon}</span><span>{item.label}</span>
-				</button>
-			{/each}
-		</nav>
-		<div class="divider"></div>
-		<div class="privacy-card"><span class="shield">♢</span><strong>Внутренний контур</strong><small>Только доступные вам документы</small></div>
-	</aside>
-
-	<main class="content">
-		<header class="topbar">
-			<button class="mobile-menu" onclick={() => (showMenu = !showMenu)}>☰</button>
-			<div class="search"><span>⌕</span><input placeholder="Поиск по документам, шаблонам и истории" /></div>
-			<div class="top-actions"><span class="dot"></span><button class="profile-trigger" onclick={() => (showAuth = true)}><div class="avatar">⋯</div><div class="user-info"><strong>Профиль</strong><small>Войти или зарегистрироваться</small></div></button></div>
-		</header>
-
+	<aside class:mobile-open={showMenu} class="sidebar"><div class="brand"><span class="brand-mark">⌁</span><span class="brand-name">СВОД</span></div><nav class="main-nav">{#each navItems as item}<button class:active={activeNav === item.label} onclick={() => { activeNav = item.label; showMenu = false; if (item.label === 'Документы') loadDocuments(); }}><span class="nav-icon">{item.icon}</span><span>{item.label}</span></button>{/each}</nav><div class="divider"></div><div class="privacy-card"><span class="shield">♢</span><strong>Внутренний контур</strong><small>Данные доступны после входа</small></div></aside>
+	<main class="content"><header class="topbar"><button class="mobile-menu" onclick={() => showMenu = !showMenu}>☰</button><div class="search"><span>⌕</span><input placeholder="Поиск по документам" /></div><div class="top-actions">{#if user}<button class="profile-trigger" onclick={logout}><div class="avatar">{(user.name || user.email || 'U').slice(0,1).toUpperCase()}</div><div class="user-info"><strong>{user.name || user.email}</strong><small>Выйти</small></div></button>{:else}<button class="interactive-button secondary" onclick={() => showAuth = true}>Войти</button>{/if}</div></header>
 		<div class="page-wrap">
-			{#if activeNav === 'AI-чат' || activeNav === 'Главная'}
-			<div class="page-heading"><div><div class="eyebrow">01 / WORKSPACE · ВНУТРЕННИЕ ЗНАНИЯ</div><h1>{activeNav === 'Главная' ? 'Главная' : 'AI-чат'}</h1><p>Задайте вопрос по документам и получите ответ с источниками.</p><div class="connection-status">● {connectionState}</div></div><button class="interactive-button ghost-button" onclick={startNewChat}>＋ Новый чат</button></div>
-
-			<div class="layout-grid">
-				<section class="conversation">
-					<div class="greeting"><div class="sparkle">✧</div><div><strong>Добро пожаловать</strong><span>Задайте вопрос по внутренним документам и регламентам.</span></div></div>
-					{#if query}
-						<div class="question-meta">Ваш запрос</div><div class="question-bubble">{query}</div>
-					{:else}
-						<div class="question-bubble muted">Здесь появится ваш вопрос и проверяемый ответ с источниками.</div>
-					{/if}
-
-					{#if isLoading}
-						<div class="answer-card loading-card"><div class="card-kicker"><span class="spinner"></span> Изучаю внутренние документы</div><p>Проверяю актуальность версий и собираю подтверждения для каждого шага.</p><div class="loading-lines"><i></i><i></i><i></i></div></div>
-				{:else if hasAnswer}
-					<div class="answer-card"><div class="card-kicker"><span class="teal-icon">✧</span> Свод AI <span class="verified">На основе 3 источников</span></div><h2>От потребности — к согласованию</h2><p>Для закупки оборудования подготовьте служебную записку. Вот порядок действий по действующим документам:</p>
-						<div class="steps">
-							<div class="step"><span>1</span><div><strong>Обоснуйте потребность</strong><p>Укажите оборудование, количество и цель закупки. Объясните, какую задачу решит приобретение.</p><small>Регламент закупок · п. 4.1 ↗</small></div></div>
-							<div class="step"><span>2</span><div><strong>Заполните служебную записку</strong><p>Используйте шаблон ЗАК-01: добавьте обоснование, ориентировочную сумму и подразделение.</p><small>Шаблон служебной записки · v1.6 ↗</small></div></div>
-							<div class="step"><span>3</span><div><strong>Приложите подтверждающие материалы</strong><p>Добавьте коммерческое предложение и технические требования. Проверьте комплектность вложений.</p><small>Регламент закупок · п. 4.3 ↗</small></div></div>
-							<div class="step"><span>4</span><div><strong>Передайте на согласование</strong><p>Маршрут: руководитель подразделения → финансовый отдел → отдел закупок. После согласования передайте на исполнение.</p><small>Порядок согласования договоров · п. 2.2 ↗</small></div></div>
-						</div>
-						<div class="answer-actions"><button class="interactive-button secondary">▤ Открыть шаблон</button><button class="interactive-button primary" onclick={() => (draft = 'Создать черновик служебной записки')}>✧ Создать черновик</button><button class="interactive-button secondary route">⌁ Показать маршрут</button></div>
-						<div class="feedback"><span>Ответ был полезен?</span><div><button class:copied class="tiny" onclick={copyAnswer}>♧ {copied ? 'Скопировано' : 'Да, спасибо'}</button><button class="tiny">♧</button><button class="tiny">▣</button></div></div>
-					</div>
-				{:else}
-					<div class="welcome-card"><div class="welcome-symbol">✧</div><h2>С чего начнём?</h2><p>Задайте вопрос о внутренних процессах. Я найду нужные документы, покажу источники и помогу подготовить черновик.</p><div><button class="interactive-button secondary">⌕ Найти документ</button><button class="interactive-button secondary">▤ Обновить список</button></div></div>
-				{/if}
-
-					<div class="composer"><textarea bind:value={draft} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), submitQuery())} placeholder="Задайте уточняющий вопрос..."></textarea><div class="composer-bottom"><button class="attach">⌕ Прикрепить файл</button><button class="interactive-button primary send" onclick={submitQuery}>↥ Отправить</button></div></div>
-					<p class="disclaimer">AI использует только документы в пределах вашего доступа.</p><p class="demo-note">Ответ сверяйте с действующей версией документа.</p>
-				</section>
-
-				<aside class="right-rail">
-					<div class="rail-card"><h3>▥ Источники ответа</h3>{#if visibleSources.length}<p class="rail-caption">{visibleSources.length} документа · действующие версии</p>{#each visibleSources as source}<button class="source-item" onclick={() => openSource(source.title)}><div><strong>{source.title}</strong><small>{source.meta}</small></div><div class="source-foot"><span>Действует</span><em>{source.score}</em></div><span class="source-open">Открыть документ ↗</span></button>{/each}<p class="rail-caption">Нажмите на источник, чтобы открыть документ.</p>{:else}<div class="empty-rail">Источники появятся после первого вопроса.</div>{/if}</div>
-					<div class="rail-card compact"><h3>⌁ Быстрые действия</h3><button class="interactive-button" onclick={() => (activeNav = 'Документы')}>Открыть документы <span>↗</span></button><button class="interactive-button" onclick={() => (activeNav = 'AI-чат')}>Открыть AI-чат <span>↗</span></button></div>
-				</aside>
-			</div>
+			{#if activeNav === 'Главная' || activeNav === 'AI-чат'}
+			<div class="page-heading"><div><div class="eyebrow">01 / ВНУТРЕННИЕ ЗНАНИЯ</div><h1>{activeNav === 'Главная' ? 'Главная' : 'AI-чат'}</h1><p>Задайте вопрос по документам и получите ответ с источниками.</p><div class="connection-status">● {connectionState}</div></div><button class="interactive-button ghost-button" onclick={() => { messages = []; sessionId = ''; }}>＋ Новый чат</button></div>
+			<div class="layout-grid"><section class="conversation"><div class="greeting"><div class="sparkle">✧</div><div><strong>Спросите Свод AI</strong><span>Ответы формируются по актуальным документам вашей базы.</span></div></div>{#if !user}<div class="login-hint">Войдите, чтобы задавать вопросы и сохранять сессии.</div>{/if}<div class="history">{#each messages as message}<div class:from-user={message.role === 'user'} class:error-message={message.role === 'error'} class="message"><div class="message-role">{message.role === 'user' ? 'Вы' : message.role === 'error' ? 'Ошибка' : 'Свод AI'}</div>{#if message.role === 'error'}<p>{message.content}</p>{:else}<div class="message-content">{@html markdown(message.content)}</div>{#if message.sources?.length}<div class="sources-inline">{#each message.sources as source}<button class="source-chip" onclick={() => openSource(source)}>{source.doc || 'Источник'} · стр. {source.page ?? '—'}</button>{/each}</div>{/if}{#if message.role === 'assistant'}<div class="feedback"><button onclick={() => feedback(message, 'up')}>👍</button><button onclick={() => feedback(message, 'down')}>👎</button></div>{/if}{/if}</div>{/each}{#if isLoading}<div class="answer-card loading-card"><div class="card-kicker"><span class="spinner"></span> Изучаю документы</div><p>Собираю ответ и проверяю источники…</p></div>{/if}{#if !messages.length}<div class="welcome-card"><div class="welcome-symbol">✧</div><h2>С чего начнём?</h2><p>Спросите о регламенте, документе или рабочем процессе.</p></div>{/if}</div><div class="composer"><textarea bind:value={draft} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), submitQuery())} placeholder="Задайте вопрос…" disabled={isLoading}></textarea><div class="composer-bottom"><span class="attach">Enter — отправить · Shift+Enter — новая строка</span><button class="interactive-button primary send" onclick={submitQuery} disabled={isLoading}>↥ Отправить</button></div></div>{#if errorText}<p class="error-text">{errorText}</p>{/if}</section><aside class="right-rail"><div class="rail-card"><h3>⌁ Быстрые действия</h3><button class="interactive-button" onclick={() => activeNav = 'Документы'}>Открыть документы <span>↗</span></button><button class="interactive-button" onclick={() => activeNav = 'AI-чат'}>Открыть AI-чат <span>↗</span></button></div></aside></div>
 			{:else}
-				<div class="page-heading"><div><div class="eyebrow">02 / WORKSPACE · {activeNav.toUpperCase()}</div><h1>{activeNav}</h1><p>Документы из подключённой базы PocketBase.</p></div><button class="interactive-button ghost-button" onclick={() => (activeNav = 'AI-чат')}>✧ К AI-чату</button></div>
-				<div class="workspace-grid">
-					<section class="workspace-main">
-						<div class="workspace-banner"><span class="workspace-icon">{navItems.find((item) => item.label === activeNav)?.icon}</span><div><strong>Единый каталог документов</strong><p>Здесь можно продолжить работу с внутренними материалами.</p></div></div>
-						{#if activeNav === 'Документы'}
-							{#if selectedDocument}<div class="document-detail"><button class="back-link" onclick={() => (selectedDocument = '')}>← Все документы</button><div class="document-detail-head"><span class="document-icon">▣</span><div><h2>{selectedDocument}</h2><p>Документ из PocketBase · действующая версия</p></div><span class="status-chip">Действует</span></div><div class="document-detail-body"><h3>О документе</h3><p>Документ загружен из подключённого хранилища PocketBase.</p></div></div>{:else}<div class="document-list">{#if documents.length}{#each documents as doc}<button class="document-row" onclick={() => (selectedDocument = doc.title)}><span class="document-icon">▣</span><span><strong>{doc.title}</strong><small>{doc.description ?? 'Документ из PocketBase'}</small></span><em>{doc.updated ? new Date(doc.updated).toLocaleDateString('ru-RU') : 'Актуальный'}</em></button>{/each}{:else}<div class="empty-rail">Нет доступных документов. Проверьте авторизацию PocketBase.</div>{/if}</div>{/if}
-						{/if}
-					</section>
-					<aside class="rail-card context-card"><h3>⌁ Быстрые действия</h3><button class="interactive-button" onclick={() => (activeNav = 'AI-чат')}>Задать вопрос AI <span>↗</span></button><button class="interactive-button" onclick={() => (activeNav = 'Документы')}>Открыть документы <span>↗</span></button><button class="interactive-button" onclick={() => (activeNav = 'Документы')}>Обновить список <span>↗</span></button></aside>
-				</div>
+			<div class="page-heading"><div><div class="eyebrow">02 / WORKSPACE · ДОКУМЕНТЫ</div><h1>Документы</h1><p>Документы и версии из PocketBase.</p></div><button class="interactive-button ghost-button" onclick={() => activeNav = 'AI-чат'}>✧ К AI-чату</button></div><div class="workspace-grid"><section class="workspace-main"><div class="workspace-banner"><span class="workspace-icon">▣</span><div><strong>Единый каталог документов</strong><p>{docsLoading ? 'Загружаю данные…' : `${documents.length} документов из PocketBase`}</p></div></div><div class="document-list">{#if documents.length}{#each documents as doc}<article class="document-row"><span class="document-icon">▣</span><span><strong>{doc.title || doc.name || 'Документ'}</strong><small>{doc.description || 'Документ из PocketBase'} · {doc.expand?.current_version?.version_label || doc.expand?.current_version?.status || 'версия не указана'}</small></span><em>{doc.expand?.current_version?.status || 'active'}</em></article>{/each}{:else}<div class="empty-rail">{token ? 'Документы не найдены или недоступны.' : 'Войдите, чтобы увидеть документы.'}</div>{/if}</div>{#if user && ['admin', 'methodologist'].includes(user.role)}<div class="upload-card"><h2>Загрузить новую версию</h2><div class="upload-fields"><input placeholder="Версия, например v2.1" bind:value={uploadVersionLabel} /><input type="file" onchange={(e) => uploadFile = (e.currentTarget as HTMLInputElement).files?.[0] || null} /><button class="interactive-button primary" onclick={uploadDocumentVersion}>Загрузить</button></div>{#if uploadStatus}<p>{uploadStatus}</p>{/if}</div>{/if}</section></div>
 			{/if}
-		</div>
-	</main>
-	{#if showAuth}
-		<div class="auth-backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && (showAuth = false)}>
-			<div class="auth-card" role="dialog" aria-modal="true" aria-label="Регистрация">
-				<button class="auth-close" aria-label="Закрыть" onclick={() => (showAuth = false)}>×</button>
-				<div class="auth-mark">⌁</div><div class="eyebrow">СВОД · ВНУТРЕННИЙ КОНТУР</div>
-				<h2>{authMode === 'register' ? 'Создать аккаунт' : 'Войти в Свод'}</h2><p>Получите доступ к рабочему пространству и внутренним документам.</p>
-				{#if authMode === 'register'}<label>Имя<input placeholder="Ваше имя" /></label>{/if}<label>Рабочая почта<input type="email" placeholder="name@company.ru" /></label><label>Пароль<input type="password" placeholder="Не менее 8 символов" /></label>
-				<button class="interactive-button primary auth-submit" onclick={() => (showAuth = false)}>{authMode === 'register' ? 'Зарегистрироваться' : 'Войти'}</button>
-				<button class="auth-switch" onclick={() => (authMode = authMode === 'register' ? 'login' : 'register')}>{authMode === 'register' ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться'}</button>
-			</div>
-		</div>
-	{/if}
+		</div></main>
+	{#if selectedSource}<div class="source-backdrop" onclick={(e) => e.target === e.currentTarget && (selectedSource = null)}><section class="source-panel"><button class="auth-close" onclick={() => selectedSource = null}>×</button><div class="eyebrow">ИСТОЧНИК · {selectedSource.doc || 'Документ'}</div><h2>{selectedSource.chapter || 'Пункт документа'}</h2><p class="source-meta">Страница {selectedSource.page ?? '—'} · версия {selectedSource.version || '—'}</p><div class="source-text">{selectedChunk}</div></section></div>{/if}
+	{#if showAuth}<div class="auth-backdrop"><section class="auth-card"><button class="auth-close" onclick={() => showAuth = false}>×</button><div class="auth-mark">⌁</div><div class="eyebrow">СВОД · ВНУТРЕННИЙ КОНТУР</div><h2>Войти</h2><p>Используйте рабочую учётную запись PocketBase.</p><label>Почта<input type="email" bind:value={identity} /></label><label>Пароль<input type="password" bind:value={password} onkeydown={(e) => e.key === 'Enter' && login()} /></label>{#if authError}<p class="error-text">{authError}</p>{/if}<button class="interactive-button primary auth-submit" onclick={login}>Войти</button></section></div>{/if}
 </div>
-
 <style>
-	:global(*) { box-sizing: border-box; }
-	:global(body) { margin: 0; background: #070d1a; color: #e7edf7; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; }
-	:global(button), :global(input), :global(textarea) { font: inherit; }
-	.app-shell { min-height: 100vh; display: flex; background: radial-gradient(ellipse at 55% -10%, #14213d 0%, #080e1a 48%, #060b15 100%); }
-	.sidebar { width: 238px; min-width: 238px; border-right: 1px solid #1a2945; background: rgba(9,16,31,.88); padding: 27px 16px 20px; display: flex; flex-direction: column; }
-	.brand { display: flex; gap: 10px; align-items: center; margin: 4px 5px 31px; }.brand-mark { width: 28px; height: 28px; border: 1px solid #2dd6cb; color: #64ece2; border-radius: 9px; display: grid; place-items: center; font-size: 23px; line-height: 1; }.brand-name { font-size: 15px; letter-spacing: .08em; font-weight: 600; }
-	.main-nav { display: grid; gap: 4px; }.main-nav button { border: 0; background: transparent; color: #9eacc3; display: flex; align-items: center; gap: 12px; text-align: left; padding: 9px 10px; border-radius: 7px; cursor: pointer; font-size: 12px; }.main-nav button:hover, .main-nav button.active { background: #16464b; color: #79eee6; }.nav-icon { width: 15px; text-align: center; color: inherit; font-size: 15px; }.divider { height: 1px; background: #1b2943; margin: 24px 4px 16px; }.privacy-card { margin-top: auto; background: #111d33; border: 1px solid #263855; border-radius: 8px; padding: 14px 11px; display: grid; gap: 5px; color: #91a1b6; }.privacy-card strong { color: #d9e3ef; font-size: 11px; }.privacy-card small { font-size: 9px; line-height: 1.45; }.shield { color: #47e0d5; font-size: 14px; }
-	.content { flex: 1; min-width: 0; }.topbar { height: 69px; border-bottom: 1px solid #1c2940; display: flex; align-items: center; gap: 20px; padding: 0 28px; }.search { height: 34px; border: 1px solid #253757; background: #101c31; border-radius: 7px; display: flex; align-items: center; gap: 9px; padding: 0 10px; flex: 1; max-width: 560px; color: #7d8ea8; }.search input { border: 0; outline: 0; color: #dfe8f5; background: transparent; flex: 1; font-size: 11px; }.search input::placeholder { color: #74849a; }.search kbd { font-size: 9px; color: #6f819a; }.top-actions { margin-left: auto; display: flex; align-items: center; gap: 9px; }.icon-btn { background: transparent; color: #adbad0; border: 0; font-size: 16px; }.dot { width: 4px; height: 4px; background: #48dcd0; border-radius: 50%; }.avatar { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 50%; background: #17294b; border: 1px solid #2b426b; color: #93c5e7; font-size: 9px; }.user-info { display: grid; gap: 2px; }.user-info strong { font-size: 10px; }.user-info small { color: #73839b; font-size: 8px; }.mobile-menu { display:none; }
-	.page-wrap { max-width: 1190px; margin: 0 auto; padding: 29px 30px 50px; }.page-heading { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 22px; }.eyebrow { font-size: 8px; color: #788aa5; letter-spacing: .06em; margin-bottom: 14px; }.page-heading h1 { margin: 0 0 5px; font-size: 19px; letter-spacing: -.02em; }.page-heading p { margin: 0; color: #8291a7; font-size: 10px; }.ghost-button, .secondary, .primary { border-radius: 6px; padding: 9px 13px; cursor: pointer; border: 1px solid #263957; color: #d4deed; background: #12213b; font-size: 10px; }.ghost-button:hover, .secondary:hover { border-color: #3d6388; }.primary { background: #58ded1; border-color: #58ded1; color: #071a25; font-weight: 650; }.layout-grid { display: grid; grid-template-columns: minmax(0, 1fr) 244px; gap: 20px; }.conversation { min-width: 0; }.greeting { border: 1px solid #2a3b59; background: linear-gradient(100deg, #15253c, #122039); border-radius: 8px; min-height: 59px; padding: 13px 16px; display: flex; align-items: center; gap: 12px; }.sparkle, .teal-icon { color: #63e6dd; background: #123c42; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; font-size: 18px; }.greeting strong { display: block; font-size: 11px; margin-bottom: 3px; }.greeting span { color: #8393a8; font-size: 9px; }.question-meta { text-align: right; font-size: 8px; color: #71829a; padding: 9px 9px 5px; }.question-bubble { background: #17243c; border: 1px solid #2b3e5d; border-radius: 8px; padding: 12px; font-size: 10px; margin-bottom: 10px; color: #e1e9f5; }.question-bubble.muted { margin-top: 9px; }.answer-card, .welcome-card { border: 1px solid #2b4262; background: linear-gradient(145deg, #111e34, #101b2e); border-radius: 13px; padding: 17px 17px 13px; }.card-kicker { color: #d6e0ef; font-size: 10px; display: flex; align-items: center; gap: 8px; }.teal-icon { width: 22px; height: 22px; font-size: 13px; border-radius: 6px; }.verified { margin-left: auto; color: #73e2d8; background: #124843; border-radius: 4px; padding: 4px 6px; font-size: 8px; }.answer-card h2, .welcome-card h2 { margin: 14px 0 8px; font-size: 16px; }.answer-card > p, .welcome-card p { color: #94a1b3; font-size: 10px; line-height: 1.55; margin: 0 0 15px; }.steps { display: grid; gap: 13px; }.step { display: grid; grid-template-columns: 21px 1fr; gap: 9px; }.step > span { background: #14504f; color: #73e5dc; height: 17px; width: 17px; border-radius: 5px; display:grid; place-items:center; font-size: 9px; margin-top: 1px; }.step strong { font-size: 10px; }.step p { color: #9aa8ba; font-size: 9px; line-height: 1.45; margin: 4px 0 2px; }.step small { color: #6ea7b1; font-size: 8px; }.answer-actions { display: flex; gap: 7px; margin-top: 15px; padding-top: 13px; border-top: 1px solid #20314c; }.answer-actions .secondary, .answer-actions .primary { padding: 8px 10px; }.feedback { display: flex; justify-content: space-between; align-items: center; color: #78899f; border-top: 1px solid #1c2c46; margin-top: 12px; padding-top: 10px; font-size: 9px; }.feedback > div { display: flex; gap: 4px; }.tiny { border: 0; color: #9cabc0; background: transparent; font-size: 9px; cursor: pointer; }.tiny.copied { color: #68e1d5; }.composer { margin-top: 12px; background: #111e33; border: 1px solid #293e5b; border-radius: 9px; padding: 10px 12px 8px; }.composer textarea { display: block; width: 100%; min-height: 27px; resize: vertical; border: 0; outline: 0; color: #dbe4f1; background: transparent; font-size: 10px; }.composer textarea::placeholder { color: #788ba4; }.composer-bottom { display: flex; justify-content: space-between; align-items: center; margin-top: 5px; }.attach { border: 0; background: transparent; color: #7d8da4; font-size: 9px; cursor: pointer; }.send { padding: 7px 14px; }.disclaimer, .demo-note { color: #6e7d92; font-size: 8px; margin: 9px 2px 0; }.demo-note { margin-top: 17px; }
-	.right-rail { display: grid; align-content: start; gap: 10px; }.rail-card { background: #111e34; border: 1px solid #263a59; border-radius: 12px; padding: 13px 12px; }.rail-card h3 { margin: 0 0 9px; font-size: 11px; }.rail-caption { color: #788aa2; font-size: 8px; margin: 0 0 10px; line-height: 1.4; }.source-item { border: 1px solid #263957; background: #14233a; border-radius: 7px; padding: 10px 9px; margin-bottom: 7px; }.source-item strong { display: block; color: #dde7f3; font-size: 9px; margin-bottom: 4px; }.source-item small { color: #788ca6; font-size: 8px; }.source-foot { margin-top: 8px; display: flex; justify-content: space-between; align-items: center; }.source-foot span { color: #69e3d9; background: #104d4c; padding: 3px 5px; border-radius: 4px; font-size: 8px; }.source-foot em { font-style: normal; color: #70dcd1; font-size: 8px; }.compact h3 { color: #dbe6f1; }.compact button { width: 100%; background: transparent; border: 0; border-bottom: 1px solid #23344f; color: #9eacc1; padding: 8px 0; text-align: left; font-size: 9px; cursor:pointer; }.compact button:last-child { border-bottom: 0; }.compact button span { float: right; color: #b3c2d4; }.welcome-card { min-height: 240px; padding: 38px 24px; }.welcome-symbol { margin: 0 auto 12px; background: #124d54; width: 39px; height: 39px; border-radius: 12px; display: grid; place-items: center; color: #62e4dc; font-size: 20px; }.welcome-card h2 { font-size: 18px; }.welcome-card p { max-width: 620px; margin-bottom: 18px; }.loading-card { min-height: 225px; }.loading-card p { margin-top: 18px; }.spinner { width: 10px; height: 10px; border: 1px solid #68e1d8; border-top-color: transparent; border-radius: 50%; display:inline-block; animation: spin .8s linear infinite; }.loading-lines { display:grid; gap: 12px; margin-top: 28px; }.loading-lines i { height: 8px; width: 80%; background: #1d2d48; border-radius: 8px; display:block; }.loading-lines i:nth-child(2) { width: 100%; }.loading-lines i:nth-child(3) { width: 55%; } @keyframes spin { to { transform: rotate(360deg); } }
-	.profile-trigger { border: 0; background: transparent; color: inherit; display: flex; align-items: center; gap: 8px; padding: 0; cursor: pointer; text-align: left; }.profile-trigger:hover .user-info strong { color: #69e3d9; }
-	.empty-rail { border: 1px dashed #2a3b59; border-radius: 8px; padding: 15px 10px; color: #788ca6; font-size: 9px; line-height: 1.5; }.metrics-empty { background: #111e34; border: 1px solid #293e5b; border-radius: 12px; padding: 16px; }.metrics-empty > p { margin: 0 0 14px; color: #8797ab; font-size: 10px; }.metric-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }.metric-fields label { display: grid; gap: 6px; color: #93a3b9; font-size: 9px; }.metric-fields input { min-width: 0; border: 1px solid #2a3f5d; border-radius: 7px; background: #0c172a; color: #e1e9f5; padding: 10px; outline: 0; }.metric-fields input:focus { border-color: #53d8ce; }
-	.auth-backdrop { position: fixed; z-index: 30; inset: 0; background: rgba(3,8,17,.78); display: grid; place-items: center; padding: 18px; }.auth-card { position: relative; width: min(100%, 390px); background: #111e34; border: 1px solid #2d4668; border-radius: 14px; padding: 28px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }.auth-close { position: absolute; top: 12px; right: 14px; border: 0; background: transparent; color: #8fa0b8; font-size: 22px; cursor: pointer; }.auth-mark { width: 38px; height: 38px; border: 1px solid #2dd6cb; color: #64ece2; border-radius: 11px; display: grid; place-items: center; font-size: 23px; margin-bottom: 17px; }.auth-card .eyebrow { margin-bottom: 7px; }.auth-card h2 { margin: 0 0 7px; font-size: 20px; }.auth-card > p { color: #8798ae; font-size: 10px; line-height: 1.5; margin: 0 0 20px; }.auth-card label { display: grid; gap: 6px; color: #a4b2c5; font-size: 10px; margin-top: 12px; }.auth-card input { border: 1px solid #2a3f5d; border-radius: 7px; background: #0c172a; color: #e1e9f5; padding: 10px 11px; outline: 0; }.auth-card input:focus { border-color: #53d8ce; }.auth-submit { width: 100%; margin-top: 21px; padding: 11px; }.auth-switch { display: block; margin: 14px auto 0; color: #68ddd4; border: 0; background: transparent; font-size: 10px; cursor: pointer; }
-	/* Interactive hover button adapted from the requested component for Svelte. */
-	.interactive-button { position: relative; overflow: hidden; isolation: isolate; min-width: 142px; border: 1px solid #315176; border-radius: 999px; background: #12213b; color: #dce8f4; padding: 9px 14px; font-size: 10px; font-weight: 650; cursor: pointer; transition: color .25s, border-color .25s, transform .25s; }.interactive-button::before { content: ''; position: absolute; z-index: -1; width: 0; height: 100%; left: 0; top: 0; border-radius: inherit; background: #58ded1; transition: all .3s ease; }.interactive-button:hover { color: #071a25; border-color: #58ded1; transform: translateY(-1px); }.interactive-button:hover::before { width: 100%; height: 100%; left: 0; top: 0; }	@media (max-width: 900px) { .sidebar { width: 205px; min-width: 205px; }.page-wrap { padding: 24px 18px 35px; }.layout-grid { grid-template-columns: minmax(0,1fr) 220px; }.user-info { display:none; }.topbar { padding: 0 18px; } }
-	@media (max-width: 700px) { .sidebar { position: fixed; z-index: 10; left: -240px; top: 0; bottom: 0; transition: left .2s ease; box-shadow: 10px 0 30px rgba(0,0,0,.4); }.sidebar.mobile-open { left: 0; }.mobile-menu { display:block; border:0; color:#a8b7cc; background:transparent; font-size:18px; cursor:pointer; }.topbar { height: 58px; padding: 0 12px; gap: 9px; }.search { height: 31px; }.search kbd { display:none; }.top-actions { gap: 5px; }.icon-btn { display:none; }.page-wrap { padding: 20px 12px 30px; }.page-heading { align-items: flex-start; }.page-heading .ghost-button { padding: 7px 9px; }.layout-grid { display: block; }.workspace-grid { display: block; }.context-card { margin-top: 12px; }.template-grid { grid-template-columns: 1fr; }.metric-fields { grid-template-columns: 1fr; }.right-rail { margin-top: 12px; }.right-rail .rail-card:first-child { order: 0; }.answer-actions { flex-wrap: wrap; }.answer-actions .route { flex-basis: 100%; }.greeting { padding: 11px; }.question-bubble { line-height: 1.4; }.answer-card { padding: 14px 12px 11px; }.step p { font-size: 9px; }.welcome-card { padding: 28px 16px; min-height: 220px; } }
-	/* Spacious workspace layout */
-	:global(body) { font-size: 15px; }
-	.sidebar { width: 286px; min-width: 286px; padding: 34px 22px 24px; }
-	.brand { margin-bottom: 42px; }.brand-mark { width: 38px; height: 38px; font-size: 29px; }.brand-name { font-size: 19px; }
-	.main-nav { gap: 8px; }.main-nav button { padding: 14px 13px; gap: 15px; font-size: 15px; }.nav-icon { font-size: 19px; width: 20px; }
-	.topbar { height: 84px; padding: 0 42px; }.search { height: 44px; max-width: 760px; padding: 0 14px; }.search input { font-size: 14px; }
-	.page-wrap { max-width: 1480px; padding: 44px 48px 72px; }.page-heading { margin-bottom: 32px; }.eyebrow { font-size: 11px; margin-bottom: 17px; }.page-heading h1 { font-size: 31px; }.page-heading p { font-size: 15px; }.connection-status { margin-top: 12px; color: #67d9cf; font-size: 13px; }
-	.layout-grid { grid-template-columns: minmax(0, 1fr) 330px; gap: 28px; }.greeting { min-height: 82px; padding: 20px 24px; gap: 16px; }.sparkle { width: 42px; height: 42px; font-size: 24px; }.greeting strong { font-size: 16px; }.greeting span { font-size: 13px; }
-	.question-bubble { padding: 17px; font-size: 15px; margin-bottom: 16px; }.answer-card, .welcome-card { padding: 26px 26px 20px; border-radius: 16px; }.card-kicker { font-size: 14px; }.answer-card h2, .welcome-card h2 { font-size: 24px; }.answer-card > p, .welcome-card p { font-size: 14px; line-height: 1.7; }.step { grid-template-columns: 30px 1fr; gap: 14px; }.step > span { width: 25px; height: 25px; font-size: 13px; }.step strong { font-size: 15px; }.step p { font-size: 13px; }.step small { font-size: 11px; }
-	.composer { margin-top: 18px; padding: 16px 18px 13px; border-radius: 13px; }.composer textarea { min-height: 72px; font-size: 15px; }.attach { font-size: 13px; }.send { padding: 11px 18px; }.disclaimer, .demo-note { font-size: 11px; }
-	.rail-card { padding: 18px 16px; }.rail-card h3 { font-size: 15px; }.rail-caption { font-size: 11px; }.source-item { padding: 14px 13px; }.source-item strong { font-size: 13px; }.source-item small, .source-foot span, .source-foot em { font-size: 11px; }.compact button { padding: 12px 0; font-size: 13px; }
-	.document-row { min-height: 76px; padding: 16px 18px; font-size: 14px; }
-	.workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 28px; align-items: start; }
-	.workspace-main { min-width: 0; }
-	.workspace-banner { display: flex; align-items: center; gap: 18px; padding: 22px 24px; margin-bottom: 18px; background: linear-gradient(135deg,#152844,#102038); border: 1px solid #2a4263; border-radius: 16px; }
-	.workspace-icon { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: #124b50; color: #72e9df; font-size: 24px; }
-	.workspace-banner strong { display: block; font-size: 18px; margin-bottom: 6px; }.workspace-banner p { margin: 0; color: #91a2ba; font-size: 14px; }
-	.document-list { display: grid; gap: 12px; }.document-row { display: flex; align-items: center; gap: 16px; width: 100%; text-align: left; color: #e3ebf6; background: #111e34; border: 1px solid #2a4263; border-radius: 14px; padding: 18px 20px; cursor: pointer; transition: .2s; }.document-row:hover { border-color: #59d8cf; transform: translateY(-1px); }.document-row .document-icon { flex: 0 0 auto; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 11px; background: #173d4d; color: #6fe5db; font-size: 20px; }.document-row span:nth-child(2) { flex: 1; }.document-row strong { display: block; font-size: 15px; margin-bottom: 5px; }.document-row small { display: block; color: #91a2b9; font-size: 13px; }.document-row em { color: #6bd8cf; font-style: normal; font-size: 12px; }
-	.compact h3 { text-align: center; }.compact button { display: flex; justify-content: center; align-items: center; gap: 8px; text-align: center; }.compact button span { float: none; margin-left: 4px; }
+	:global(*){box-sizing:border-box}:global(body){margin:0;background:#070d1a;color:#e7edf7;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:15px}:global(button),:global(input),:global(textarea){font:inherit}.app-shell{min-height:100vh;display:flex;background:radial-gradient(ellipse at 55% -10%,#14213d 0%,#080e1a 48%,#060b15 100%)}.sidebar{width:286px;min-width:286px;border-right:1px solid #1a2945;background:rgba(9,16,31,.9);padding:34px 22px 24px;display:flex;flex-direction:column}.brand{display:flex;gap:12px;align-items:center;margin:4px 5px 42px}.brand-mark{width:38px;height:38px;border:1px solid #2dd6cb;color:#64ece2;border-radius:11px;display:grid;place-items:center;font-size:29px}.brand-name{font-size:19px;letter-spacing:.08em;font-weight:700}.main-nav{display:grid;gap:8px}.main-nav button{border:0;background:transparent;color:#9eacc3;display:flex;align-items:center;gap:15px;text-align:left;padding:14px 13px;border-radius:9px;cursor:pointer;font-size:15px}.main-nav button:hover,.main-nav button.active{background:#16464b;color:#79eee6}.nav-icon{width:20px;text-align:center;font-size:19px}.divider{height:1px;background:#1b2943;margin:28px 4px 16px}.privacy-card{margin-top:auto;background:#111d33;border:1px solid #263855;border-radius:12px;padding:16px 13px;display:grid;gap:6px;color:#91a1b6}.privacy-card strong{color:#d9e3ef;font-size:13px}.privacy-card small{font-size:11px;line-height:1.45}.shield{color:#47e0d5;font-size:16px}.content{flex:1;min-width:0}.topbar{height:84px;border-bottom:1px solid #1c2940;display:flex;align-items:center;gap:20px;padding:0 42px}.search{height:44px;border:1px solid #253757;background:#101c31;border-radius:9px;display:flex;align-items:center;gap:10px;padding:0 14px;flex:1;max-width:760px;color:#7d8ea8}.search input{border:0;outline:0;color:#dfe8f5;background:transparent;flex:1;font-size:14px}.top-actions{margin-left:auto;display:flex;align-items:center;gap:12px}.profile-trigger{border:0;background:transparent;color:inherit;display:flex;align-items:center;gap:10px;padding:0;cursor:pointer;text-align:left}.avatar{width:34px;height:34px;display:grid;place-items:center;border-radius:50%;background:#17294b;border:1px solid #2b426b;color:#93c5e7;font-size:13px}.user-info{display:grid;gap:3px}.user-info strong{font-size:13px}.user-info small{color:#73839b;font-size:11px}.page-wrap{max-width:1480px;margin:0 auto;padding:44px 48px 72px}.page-heading{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:32px}.eyebrow{font-size:11px;color:#788aa5;letter-spacing:.06em;margin-bottom:17px}.page-heading h1{margin:0 0 7px;font-size:31px}.page-heading p{margin:0;color:#8291a7;font-size:15px}.connection-status{margin-top:12px;color:#67d9cf;font-size:13px}.interactive-button{border:1px solid #315176;border-radius:999px;background:#12213b;color:#dce8f4;padding:11px 18px;font-size:13px;font-weight:650;cursor:pointer}.interactive-button.primary{background:#58ded1;border-color:#58ded1;color:#071a25}.interactive-button:disabled{opacity:.55;cursor:wait}.layout-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:28px}.conversation{min-width:0}.greeting{border:1px solid #2a3b59;background:linear-gradient(100deg,#15253c,#122039);border-radius:14px;min-height:82px;padding:20px 24px;display:flex;align-items:center;gap:16px}.sparkle{color:#63e6dd;background:#123c42;width:42px;height:42px;display:grid;place-items:center;border-radius:11px;font-size:24px}.greeting strong{display:block;font-size:16px;margin-bottom:5px}.greeting span{color:#8393a8;font-size:13px}.login-hint{margin:14px 0;padding:14px 18px;border:1px solid #5b4930;background:#302718;color:#e6c98f;border-radius:10px}.history{display:grid;gap:14px;margin-top:18px}.message{max-width:88%;padding:17px 20px;background:#111e34;border:1px solid #2b4262;border-radius:15px}.message.from-user{margin-left:auto;background:#153841;border-color:#2c7777}.message-role{font-size:11px;color:#79eee6;margin-bottom:8px;font-weight:700}.message-content{font-size:15px;line-height:1.65}.message-content code{background:#0a1628;padding:2px 5px;border-radius:4px}.error-message{border-color:#7c3f4b;background:#321e2a;color:#ffb8c0}.feedback{display:flex;gap:6px;margin-top:12px}.feedback button{background:transparent;border:1px solid #315176;border-radius:8px;padding:5px 9px;cursor:pointer}.sources-inline{display:flex;flex-wrap:wrap;gap:8px;margin-top:15px}.source-chip{border:1px solid #315176;background:#142b42;color:#9be9e1;border-radius:999px;padding:7px 11px;cursor:pointer;font-size:12px}.composer{margin-top:18px;background:#111e33;border:1px solid #293e5b;border-radius:13px;padding:16px 18px 13px}.composer textarea{display:block;width:100%;min-height:72px;resize:vertical;border:0;outline:0;color:#dbe4f1;background:transparent;font-size:15px}.composer-bottom{display:flex;justify-content:space-between;align-items:center;margin-top:8px}.attach{color:#7d8da4;font-size:12px}.welcome-card,.answer-card{border:1px solid #2b4262;background:linear-gradient(145deg,#111e34,#101b2e);border-radius:16px;padding:38px 26px;text-align:center}.welcome-symbol{margin:0 auto 14px;background:#124d54;width:48px;height:48px;border-radius:14px;display:grid;place-items:center;color:#62e4dc;font-size:24px}.welcome-card h2{font-size:24px;margin:0 0 9px}.welcome-card p{color:#94a1b3;font-size:14px}.loading-card{text-align:left;min-height:150px}.card-kicker{font-size:14px}.spinner{width:13px;height:13px;border:2px solid #68e1d8;border-top-color:transparent;border-radius:50%;display:inline-block;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.right-rail{display:grid;align-content:start;gap:14px}.rail-card{background:#111e34;border:1px solid #263a59;border-radius:15px;padding:20px 18px}.rail-card h3{text-align:center;margin:0 0 14px;font-size:15px}.rail-card button{width:100%;margin-top:8px}.rail-card button span{float:right}.workspace-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:28px}.workspace-banner{display:flex;align-items:center;gap:18px;padding:22px 24px;margin-bottom:18px;background:linear-gradient(135deg,#152844,#102038);border:1px solid #2a4263;border-radius:16px}.workspace-icon{display:grid;place-items:center;width:48px;height:48px;border-radius:14px;background:#124b50;color:#72e9df;font-size:24px}.workspace-banner strong{display:block;font-size:18px;margin-bottom:6px}.workspace-banner p{margin:0;color:#91a2ba;font-size:14px}.document-list{display:grid;gap:12px}.document-row{display:flex;align-items:center;gap:16px;width:100%;text-align:left;color:#e3ebf6;background:#111e34;border:1px solid #2a4263;border-radius:14px;padding:18px 20px}.document-row .document-icon{width:40px;height:40px;display:grid;place-items:center;border-radius:11px;background:#173d4d;color:#6fe5db;font-size:20px}.document-row span:nth-child(2){flex:1}.document-row strong{display:block;font-size:15px;margin-bottom:5px}.document-row small{display:block;color:#91a2b9;font-size:13px}.document-row em{color:#6bd8cf;font-style:normal;font-size:12px}.upload-card{margin-top:20px;padding:22px;background:#111e34;border:1px solid #2a4263;border-radius:15px}.upload-card h2{margin:0 0 14px;font-size:18px}.upload-fields{display:flex;gap:10px;flex-wrap:wrap}.upload-fields input{border:1px solid #2a3f5d;border-radius:8px;background:#0c172a;color:#e1e9f5;padding:11px}.empty-rail{border:1px dashed #2a3b59;border-radius:10px;padding:22px;color:#788ca6;text-align:center}.error-text{color:#ff9fae}.source-backdrop,.auth-backdrop{position:fixed;z-index:30;inset:0;background:rgba(3,8,17,.78);display:grid;place-items:center;padding:20px}.source-panel,.auth-card{position:relative;width:min(100%,760px);max-height:85vh;overflow:auto;background:#111e34;border:1px solid #2d4668;border-radius:16px;padding:30px;box-shadow:0 20px 60px #0008}.source-panel h2{margin:0 0 8px;font-size:24px}.source-meta{color:#8291a7}.source-text{margin-top:20px;padding:20px;background:#0b1729;border-radius:12px;white-space:pre-wrap;line-height:1.7}.auth-card{width:min(100%,420px)}.auth-close{position:absolute;top:12px;right:14px;border:0;background:transparent;color:#8fa0b8;font-size:25px;cursor:pointer}.auth-mark{width:42px;height:42px;border:1px solid #2dd6cb;color:#64ece2;border-radius:12px;display:grid;place-items:center;font-size:25px;margin-bottom:18px}.auth-card h2{margin:0 0 8px;font-size:24px}.auth-card p{color:#8798ae}.auth-card label{display:grid;gap:7px;color:#a4b2c5;font-size:13px;margin-top:14px}.auth-card input{border:1px solid #2a3f5d;border-radius:8px;background:#0c172a;color:#e1e9f5;padding:12px}.auth-submit{width:100%;margin-top:22px}.mobile-menu{display:none}@media(max-width:900px){.sidebar{width:220px;min-width:220px}.page-wrap{padding:28px 20px}.layout-grid,.workspace-grid{grid-template-columns:1fr}.right-rail{margin-top:14px}}@media(max-width:700px){.sidebar{position:fixed;z-index:10;left:-240px;top:0;bottom:0;transition:left .2s}.sidebar.mobile-open{left:0}.mobile-menu{display:block;border:0;color:#a8b7cc;background:transparent;font-size:20px}.topbar{height:64px;padding:0 14px}.page-wrap{padding:22px 14px}.page-heading{align-items:flex-start}.message{max-width:100%}.composer-bottom{gap:10px;align-items:flex-end;flex-direction:column}.attach{align-self:flex-start}}
 </style>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
