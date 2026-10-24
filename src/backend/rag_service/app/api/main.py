@@ -8,7 +8,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -17,6 +17,7 @@ from app.chat import SYSTEM, ChatService, to_api
 from app.core.chunks import point_of, strip_prefix
 from app.core.config import Settings
 from app.core.intent import analyze_intent
+from app.core.validator import check_draft_file, validate_kb_file
 from app.core.pb import PocketBase
 from app.core.registry import Registry
 from app.ingest import ingest_version, load_active, make_embedder
@@ -147,6 +148,20 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
                              "relevance": round(h.relevance, 4), "relevance_pct": round(100 * h.relevance),
                              "source": h.source, "head": h.head,
                              "text_preview": strip_prefix(h.text)[:PREVIEW_CHARS], "scores": h.scores} for h in r.hits]}
+
+    @app.post("/kb/validate")
+    async def validate_kb(file: UploadFile = File(...)) -> dict[str, Any]:
+        try:
+            return validate_kb_file(await file.read(), file.filename or "upload.docx")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/check/draft")
+    async def check_draft(file: UploadFile = File(...)) -> list[dict[str, str]]:
+        try:
+            return check_draft_file(await file.read())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.post("/chat")
     def chat(req: ChatRequest, u: AuthUser = Depends(user)) -> dict[str, Any]:
