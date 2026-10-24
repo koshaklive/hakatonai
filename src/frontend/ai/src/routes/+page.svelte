@@ -1,5 +1,7 @@
 <script lang="ts">
-	let activeNav = 'AI-помощник';
+	import { onMount } from 'svelte';
+
+	let activeNav = 'Главная';
 	let query = '';
 	let draft = '';
 	let isLoading = false;
@@ -10,18 +12,43 @@
 	let authMode: 'register' | 'login' = 'register';
 	let answeredQueries = 0;
 	let selectedDocument = '';
+	let pbSession = '';
+	let chatMessages: { role: string; content: string }[] = [];
+
+	async function saveToPocketBase(message: string, answer: string) {
+		const token = localStorage.getItem('pb_token');
+		if (!token) return;
+		try {
+			let session = pbSession;
+			if (!session) {
+				const created = await fetch(`${pocketbaseUrl}/collections/chat_sessions/records`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ title: message.slice(0, 80), status: 'active' }) });
+				if (created.ok) { const row = await created.json(); session = row.id; pbSession = session; }
+			}
+			if (session) {
+				await fetch(`${pocketbaseUrl}/collections/messages/records`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ session, role: 'user', content: message }) });
+				await fetch(`${pocketbaseUrl}/collections/messages/records`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token }, body: JSON.stringify({ session, role: 'assistant', content: answer }) });
+			}
+		} catch { /* keep chat usable if PocketBase is offline */ }
+	}
 
 	const navItems = [
 		{ label: 'Главная', icon: '⌂' },
 		{ label: 'Документы', icon: '▣' },
-		{ label: 'AI-помощник', icon: '✧' },
-		{ label: 'Шаблоны', icon: '▤' },
-		{ label: 'Черновики', icon: '◈' },
-		{ label: 'История', icon: '◷' },
-		{ label: 'Аналитика', icon: '⌁' },
-		{ label: 'Команда', icon: '♧' },
-		{ label: 'Настройки', icon: '⚙' }
+		{ label: 'AI-чат', icon: '✧' }
 	];
+	const backendUrl = 'http://localhost:8000';
+	const pocketbaseUrl = 'http://localhost:8090/api';
+	let documents: { id: string; title: string; description?: string; updated?: string }[] = [];
+	let connectionState = 'Проверяю подключение…';
+	onMount(async () => {
+		try { const health = await fetch(`${backendUrl}/health`); connectionState = health.ok ? 'AI и база подключены' : 'AI-сервис требует запуска'; }
+		catch { connectionState = 'AI-сервис недоступен'; }
+		try {
+			const token = localStorage.getItem('pb_token');
+			const res = await fetch(`${pocketbaseUrl}/collections/documents/records?sort=-updated&perPage=50`, token ? { headers: { Authorization: token } } : {});
+			if (res.ok) { const data = await res.json(); documents = (data.items ?? []).map((d: any) => ({ id: d.id, title: d.title ?? d.name ?? 'Документ', description: d.description, updated: d.updated })); }
+		} catch { /* PocketBase may require auth or be stopped */ }
+	});
 
 	const sourceSets = {
 		procurement: [
@@ -44,13 +71,15 @@
 
 	function submitQuery() {
 		if (!draft.trim()) return;
-		query = draft;
+		const message = draft;
+		query = message;
 		answeredQueries += 1;
 		visibleSources = query.toLowerCase().includes('командир') ? sourceSets.trip : query.toLowerCase().includes('документ') ? sourceSets.documentation : sourceSets.procurement;
 		draft = '';
 		hasAnswer = true;
 		isLoading = true;
 		setTimeout(() => (isLoading = false), 900);
+		saveToPocketBase(message, 'Ответ сформирован на основе доступных документов.');
 	}
 
 	function startNewChat() {
@@ -98,8 +127,8 @@
 		</header>
 
 		<div class="page-wrap">
-			{#if activeNav === 'AI-помощник'}
-			<div class="page-heading"><div><div class="eyebrow">01 / DESKTOP · ОТВЕТ С ИСТОЧНИКАМИ</div><h1>AI-помощник</h1><p>Внутренние знания. Проверяемые ответы.</p></div><button class="interactive-button ghost-button" onclick={startNewChat}>＋ Новый чат</button></div>
+			{#if activeNav === 'AI-чат' || activeNav === 'Главная'}
+			<div class="page-heading"><div><div class="eyebrow">01 / WORKSPACE · ВНУТРЕННИЕ ЗНАНИЯ</div><h1>{activeNav === 'Главная' ? 'Главная' : 'AI-чат'}</h1><p>Задайте вопрос по документам и получите ответ с источниками.</p><div class="connection-status">● {connectionState}</div></div><button class="interactive-button ghost-button" onclick={startNewChat}>＋ Новый чат</button></div>
 
 			<div class="layout-grid">
 				<section class="conversation">
@@ -133,16 +162,16 @@
 
 				<aside class="right-rail">
 					<div class="rail-card"><h3>▥ Источники ответа</h3>{#if visibleSources.length}<p class="rail-caption">{visibleSources.length} документа · действующие версии</p>{#each visibleSources as source}<button class="source-item" onclick={() => openSource(source.title)}><div><strong>{source.title}</strong><small>{source.meta}</small></div><div class="source-foot"><span>Действует</span><em>{source.score}</em></div><span class="source-open">Открыть документ ↗</span></button>{/each}<p class="rail-caption">Нажмите на источник, чтобы открыть документ.</p>{:else}<div class="empty-rail">Источники появятся после первого вопроса.</div>{/if}</div>
-					<div class="rail-card compact"><h3>⌁ Быстрые действия</h3><button class="interactive-button" onclick={() => (activeNav = 'Документы')}>Открыть документы <span>↗</span></button><button class="interactive-button" onclick={() => (activeNav = 'Шаблоны')}>Выбрать шаблон <span>↗</span></button></div>
+					<div class="rail-card compact"><h3>⌁ Быстрые действия</h3><button class="interactive-button" onclick={() => (activeNav = 'Документы')}>Открыть документы <span>↗</span></button><button class="interactive-button" onclick={() => (activeNav = 'AI-чат')}>Открыть AI-чат <span>↗</span></button></div>
 				</aside>
 			</div>
 			{:else}
-				<div class="page-heading"><div><div class="eyebrow">02 / WORKSPACE · {activeNav.toUpperCase()}</div><h1>{activeNav}</h1><p>Рабочее пространство внутренних документов и процессов.</p></div><button class="interactive-button ghost-button" onclick={() => (activeNav = 'AI-помощник')}>✧ К AI-помощнику</button></div>
+				<div class="page-heading"><div><div class="eyebrow">02 / WORKSPACE · {activeNav.toUpperCase()}</div><h1>{activeNav}</h1><p>Документы из подключённой базы PocketBase.</p></div><button class="interactive-button ghost-button" onclick={() => (activeNav = 'AI-чат')}>✧ К AI-чату</button></div>
 				<div class="workspace-grid">
 					<section class="workspace-main">
 						<div class="workspace-banner"><span class="workspace-icon">{navItems.find((item) => item.label === activeNav)?.icon}</span><div><strong>{activeNav === 'Документы' ? 'Единый каталог документов' : activeNav === 'Шаблоны' ? 'Шаблоны для ежедневной работы' : activeNav === 'Черновики' ? 'Черновики и подготовленные материалы' : activeNav === 'История' ? 'История запросов и ответов' : activeNav === 'Аналитика' ? 'Аналитика использования знаний' : activeNav === 'Команда' ? 'Команда и уровни доступа' : 'Настройки рабочего пространства'}</strong><p>Здесь можно продолжить работу с внутренними материалами.</p></div></div>
 						{#if activeNav === 'Документы'}
-							{#if selectedDocument}<div class="document-detail"><button class="back-link" onclick={() => (selectedDocument = '')}>← Все документы</button><div class="document-detail-head"><span class="document-icon">▣</span><div><h2>{selectedDocument}</h2><p>Источник ответа · действующая версия</p></div><span class="status-chip">Действует</span></div><div class="document-detail-body"><h3>О документе</h3><p>Документ открыт из ответа AI. Здесь сотрудник может ознакомиться с полным содержанием, реквизитами и связанными разделами.</p><div class="detail-placeholder">Содержимое документа появится после подключения хранилища документов.</div></div></div>{:else}<div class="document-list"><div class="empty-rail">Документы появятся после подключения рабочего пространства.</div></div>{/if}
+							{#if selectedDocument}<div class="document-detail"><button class="back-link" onclick={() => (selectedDocument = '')}>← Все документы</button><div class="document-detail-head"><span class="document-icon">▣</span><div><h2>{selectedDocument}</h2><p>Документ из PocketBase · действующая версия</p></div><span class="status-chip">Действует</span></div><div class="document-detail-body"><h3>О документе</h3><p>Документ загружен из подключённого хранилища PocketBase.</p></div></div>{:else}<div class="document-list">{#if documents.length}{#each documents as doc}<button class="document-row" onclick={() => (selectedDocument = doc.title)}><span class="document-icon">▣</span><span><strong>{doc.title}</strong><small>{doc.description ?? 'Документ из PocketBase'}</small></span><em>{doc.updated ? new Date(doc.updated).toLocaleDateString('ru-RU') : 'Актуальный'}</em></button>{/each}{:else}<div class="empty-rail">Нет доступных документов. Проверьте авторизацию PocketBase.</div>{/if}</div>{/if}
 						{:else if activeNav === 'Шаблоны'}
 							<div class="template-grid"><div class="template-card"><span>▤</span><strong>Служебная записка</strong><small>ЗАК-01 · Активен</small><button class="interactive-button secondary" onclick={() => { activeNav = 'AI-помощник'; draft = 'Создать черновик служебной записки'; }}>Использовать</button></div><div class="template-card"><span>▤</span><strong>Заявка на командировку</strong><small>КОМ-02 · Активен</small><button class="interactive-button secondary" onclick={() => { activeNav = 'AI-помощник'; draft = 'Подготовить заявку на командировку'; }}>Использовать</button></div></div>
 						{:else if activeNav === 'Черновики'}
