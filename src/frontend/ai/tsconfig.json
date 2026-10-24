@@ -1,5 +1,0 @@
-{
-	"extends": "./.svelte-kit-build/tsconfig.json",
-	"compilerOptions": { "strict": true },
-	"include": ["src", "vite.config.ts"]
-}

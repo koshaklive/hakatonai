@@ -18,12 +18,14 @@ from app.chat import ChatService  # noqa: E402
 class CountingLLM:
     """Wraps a real LLM or, without one, echoes a cited answer built from the first context point."""
     def __init__(self, real=None) -> None:
-        self.real, self.calls = real, 0
+        self.real, self.calls, self.raws = real, 0, []
 
     def chat(self, messages, **kw):
         self.calls += 1
         if self.real:
-            return self.real.chat(messages, **kw)
+            res = self.real.chat(messages, **kw)
+            self.raws.append(res.text)
+            return res
         ctx = messages[-1]["content"]
         first = ctx.split("[п. ", 1)[1].split("]", 1)[0]
         return SimpleNamespace(text=f"(заглушка LLM) см. [п. {first}]")
@@ -51,8 +53,14 @@ def main() -> int:
         print(f"[{'OK' if ok else 'FAIL'}] {title}\n  query: {res.query}\n  context: "
               + " ".join(res.context)
               + f"\n  refused={res.refused} reason={res.reason} max_rel={res.max_relevance:.2f} llm_calls={res.llm_calls} {extra}")
+        print("  timings_ms:", res.timings_ms)
+        print("  sources:", res.sources)
         if not res.refused:
-            print("  answer:", res.answer.replace("\n", " ")[:300])
+            print("  answer:", res.answer.replace("\n", " "))
+        if a.live and llm.raws and not res.refused:
+            raw = llm.raws[-1]
+            print("  raw LLM:", raw.replace("\n", " "))
+            print("  postcheck changed answer:", raw.strip() != res.answer.strip())
         print()
 
     def has(res, point: str) -> bool:
