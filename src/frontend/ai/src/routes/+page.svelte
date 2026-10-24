@@ -549,12 +549,6 @@
 					<span>{item.label}</span>
 				</button>{/each}
 		</nav>
-		<div class="divider"></div>
-		<div class="privacy-card">
-			<span class="shield">♢</span>
-			<strong>Внутренний контур</strong>
-			<small>Данные доступны после входа</small>
-		</div>
 	</aside>
 	<main class="content">
 		<header class="topbar">
