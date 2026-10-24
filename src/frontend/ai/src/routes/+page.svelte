@@ -228,7 +228,9 @@
 	.workspace-icon { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: #124b50; color: #72e9df; font-size: 24px; }
 	.workspace-banner strong { display: block; font-size: 18px; margin-bottom: 6px; }.workspace-banner p { margin: 0; color: #91a2ba; font-size: 14px; }
 	.document-list { display: grid; gap: 12px; }.document-row { display: flex; align-items: center; gap: 16px; width: 100%; text-align: left; color: #e3ebf6; background: #111e34; border: 1px solid #2a4263; border-radius: 14px; padding: 18px 20px; cursor: pointer; transition: .2s; }.document-row:hover { border-color: #59d8cf; transform: translateY(-1px); }.document-row .document-icon { flex: 0 0 auto; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 11px; background: #173d4d; color: #6fe5db; font-size: 20px; }.document-row span:nth-child(2) { flex: 1; }.document-row strong { display: block; font-size: 15px; margin-bottom: 5px; }.document-row small { display: block; color: #91a2b9; font-size: 13px; }.document-row em { color: #6bd8cf; font-style: normal; font-size: 12px; }
+	.compact h3 { text-align: center; }.compact button { display: flex; justify-content: center; align-items: center; gap: 8px; text-align: center; }.compact button span { float: none; margin-left: 4px; }
 </style>
+
 
 
 
