@@ -216,14 +216,14 @@
 		}
 	}
 	async function restoreSession() {
-		if (tokenExpired()) return handle401();
+		if (tokenExpired()) return logout();
 		try {
 			const res = await fetch(`${api}/collections/users/auth-refresh`, { method: 'POST', headers: pbHeaders() });
 			if (res.ok) {
 				const data = await res.json();
 				saveAuth(data.token, data.record);
 			} else if ([400, 401, 403, 404].includes(res.status)) {
-				return handle401();
+				return logout();
 			}
 		} catch {
 			/* PocketBase недоступен: работаем с сохранённым токеном */
@@ -233,6 +233,11 @@
 	// session_id = id записи chat_sessions; создаём при первом вопросе диалога
 	async function ensureSession(firstMessage: string) {
 		if (sessionId) return sessionId;
+		// гостевой режим: без входа сессия существует только в браузере
+		if (!token || tokenExpired() || !user?.id) {
+			sessionId = crypto.randomUUID();
+			return sessionId;
+		}
 		const res = await pb('/collections/chat_sessions/records', {
 			method: 'POST',
 			body: JSON.stringify({ user: user.id, title: firstMessage.slice(0, 80), status: 'active' })
@@ -289,14 +294,17 @@
 		uploadAccess = documents.find((d) => d.id === id)?.expand?.current_version?.access_level ?? 1;
 	}
 	async function backendFetch(path: string, init: RequestInit = {}) {
-		assertAuth();
 		const headers = new Headers(init.headers);
-		headers.set('Authorization', `Bearer ${token}`);
+		const authed = !!token && !tokenExpired();
+		if (authed) headers.set('Authorization', `Bearer ${token}`);
 		if (typeof init.body === 'string' && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 		const res = await fetch(`${backendUrl}${path}`, { ...init, headers });
 		if (res.status === 401) {
-			handle401();
-			throw new AuthError('Сессия истекла. Войдите снова.');
+			if (authed) {
+				handle401();
+				throw new AuthError('Сессия истекла. Войдите снова.');
+			}
+			throw new AuthError('Сервер работает в защищённом режиме: войдите в систему.');
 		}
 		if (!res.ok) throw new HttpError(res.status);
 		return res;
@@ -312,7 +320,6 @@
 	async function submitQuery(override?: string) {
 		const message = (override ?? draft).trim();
 		if (!message || isLoading) return;
-		if (!token) return openAuth();
 		if (override === undefined) draft = '';
 		messages = [...messages, { role: 'user', content: message }];
 		await askBackend(message);
@@ -322,7 +329,7 @@
 	}
 	// Быстрые кнопки уточнения: активные шаблоны модулей из PocketBase (бэкенд обычно уточняет, какой документ нужен)
 	async function loadQuickReplies() {
-		if (quickReplies.length) return;
+		if (quickReplies.length || !token) return;
 		try {
 			const res = await pb(
 				`/collections/module_templates/records?filter=${encodeURIComponent('is_active=true')}&sort=title&perPage=20&fields=id,title,doc_kind`
@@ -421,6 +428,7 @@
 	// /chat не возвращает id сообщения, а feedback ссылается на запись messages, которую создал бэкенд:
 	// находим самое новое ещё не привязанное сообщение ассистента в этой сессии
 	async function attachMessageId(m: Message, sid: string) {
+		if (!token || tokenExpired()) return;
 		for (let attempt = 0; attempt < 4 && !m.id; attempt++) {
 			if (attempt) await new Promise((r) => setTimeout(r, 700));
 			try {
@@ -1711,4 +1719,3 @@
 		font-size: 12px;
 	}
 </style>
-
