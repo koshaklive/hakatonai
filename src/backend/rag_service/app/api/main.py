@@ -17,12 +17,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.audit import Audit
-from app.chat import SYSTEM, ChatService, load_calibration, to_api
+from app.chat import SYSTEM, ChatService, deterministic_response, load_calibration, to_api
 from app.core.chunks import point_of, strip_prefix
 from app.core.config import Settings
 from app.core.chunks import load_chunks, slug
 from app.core.docx_chunks import docx_to_chunks
 from app.core.intent import analyze_intent
+from app.core.slots_manager import update_slot_state
 from app.core.validator import check_draft_file, validate_kb_file
 from app.core.pb import PocketBase
 from app.core.registry import Registry
@@ -35,6 +36,24 @@ from app.security.auth import AuthUser, Authenticator
 log = logging.getLogger("api")
 PREVIEW_CHARS = 300
 SESSIONS: dict[str, dict[str, Any]] = {}
+
+
+def _session_data(cid: str, req: ChatRequest) -> dict[str, Any]:
+    session = SESSIONS.get(cid)
+    if session is None:
+        session = {
+            "history": [message.model_dump() for message in req.history][-6:],
+            "last_context": "",
+            "last_sources": [],
+            "slots": {},
+            "last_topic": None,
+        }
+    session.setdefault("history", [])
+    session.setdefault("last_context", "")
+    session.setdefault("last_sources", [])
+    session.setdefault("slots", {})
+    session.setdefault("last_topic", None)
+    return session
 
 
 class UTF8JSONResponse(JSONResponse):
@@ -202,11 +221,8 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     @app.post("/chat", response_class=UTF8JSONResponse)
     def chat(req: ChatRequest, u: AuthUser = Depends(user)) -> dict[str, Any]:
         cid = req.conversation_id or uuid.uuid4().hex
-        session_data = SESSIONS.get(cid, {
-            "history": [message.model_dump() for message in req.history][-6:],
-            "last_context": "",
-            "last_sources": [],
-        })
+        session_data = _session_data(cid, req)
+        slot_state = update_slot_state(session_data, req.message)
         intent_data = analyze_intent(req.message)
 
         def finish(out: dict[str, Any]) -> dict[str, Any]:
@@ -219,9 +235,22 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
             audit.chat(u, "/chat", cid, req.message, out)
             return out
 
-        if intent_data["action"] == "reply":
+        if slot_state["missing_slot"]:
+            return finish({
+                "answer": slot_state["question"],
+                "sources": [],
+                "conversation_id": cid,
+                "intent": "slot_clarification",
+                "no_answer": False,
+                "clarification": {"slot": slot_state["missing_slot"], "topic": slot_state["topic"]},
+                "query_used": req.message,
+                "latency_ms": 0,
+                "gray_zone": False,
+            })
+
+        if intent_data["action"] == "reply" and slot_state["topic"] is None:
             out = {
-                "answer": intent_data["text"],
+                "answer": deterministic_response(intent_data),
                 "sources": [],
                 "conversation_id": cid,
                 "intent": intent_data["intent"],
@@ -281,25 +310,33 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
             return finish(out)
 
         svc = chat_svc()
-        a = svc.answer(req.message, history=session_data["history"], max_access=u.access_level)
+        if intent_data["action"] == "clarify":
+            a = svc.answer(
+                slot_state["query"],
+                history=session_data["history"],
+                max_access=u.access_level,
+                last_context=session_data.get("last_context", ""),
+            )
+        else:
+            a = svc.answer(slot_state["query"], history=session_data["history"], max_access=u.access_level)
         out = to_api(a)
         out["conversation_id"] = cid
-        out["intent"] = "rag"
+        out["intent"] = "clarification" if intent_data["action"] == "clarify" else "rag"
         out["mode"] = intent_data.get("mode", "default")
-        if not a.refused and a.context_text:
+        if intent_data["action"] != "clarify" and not a.refused and a.context_text:
             session_data["last_context"] = a.context_text
             session_data["last_sources"] = out["sources"]
         return finish(out)
 
     @app.post("/chat/stream")
     def chat_stream(req: ChatRequest, u: AuthUser = Depends(user)) -> StreamingResponse:
-        svc = chat_svc()
         cid = req.conversation_id or uuid.uuid4().hex
-        session_data = SESSIONS.get(cid, {
-            "history": [message.model_dump() for message in req.history][-6:],
-            "last_context": "",
-            "last_sources": [],
-        })
+        session_data = _session_data(cid, req)
+        slot_state = update_slot_state(session_data, req.message)
+        intent_data = analyze_intent(req.message)
+        svc = chat_svc() if not slot_state["missing_slot"] and (
+            intent_data["action"] != "reply" or slot_state["topic"] is not None
+        ) else None
 
         def sse(ev: str, data: dict[str, Any]) -> str:
             return f"event: {ev}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -307,10 +344,64 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         def gen():  # noqa: ANN202
             final: dict[str, Any] | None = None
             try:
-                for ev, data in svc.stream_events(req.message, session_data["history"], u.access_level):
+                if slot_state["missing_slot"]:
+                    clarification = {
+                        "answer": slot_state["question"],
+                        "sources": [],
+                        "conversation_id": cid,
+                        "intent": "slot_clarification",
+                        "no_answer": False,
+                        "clarification": {
+                            "slot": slot_state["missing_slot"],
+                            "topic": slot_state["topic"],
+                        },
+                        "query_used": req.message,
+                        "latency_ms": 0,
+                        "gray_zone": False,
+                    }
+                    yield sse("sources", {"sources": []})
+                    yield sse("delta", {"text": clarification["answer"]})
+                    final = clarification
+                    yield sse("done", clarification)
+                    return
+
+                if intent_data["action"] == "reply" and slot_state["topic"] is None:
+                    reply = {
+                        "answer": deterministic_response(intent_data),
+                        "sources": [],
+                        "conversation_id": cid,
+                        "intent": intent_data["intent"],
+                        "no_answer": False,
+                        "clarification": None,
+                        "query_used": req.message,
+                        "latency_ms": 0,
+                        "gray_zone": False,
+                    }
+                    yield sse("sources", {"sources": []})
+                    yield sse("delta", {"text": reply["answer"]})
+                    final = reply
+                    yield sse("done", reply)
+                    return
+
+                if svc is None:
+                    raise RuntimeError("Chat service is unavailable for a non-reply intent")
+                if intent_data["action"] == "clarify":
+                    events = svc.stream_events(
+                        slot_state["query"],
+                        session_data["history"],
+                        u.access_level,
+                        last_context=session_data.get("last_context", ""),
+                    )
+                else:
+                    events = svc.stream_events(slot_state["query"], session_data["history"], u.access_level)
+                for ev, data in events:
                     if ev == "done":
+                        context_text = data.pop("_context_text", "")
                         data["conversation_id"] = cid
                         final = data
+                        if intent_data["action"] != "clarify" and context_text and not data["no_answer"]:
+                            session_data["last_context"] = context_text
+                            session_data["last_sources"] = data["sources"]
                     yield sse(ev, data)
             except Exception as e:  # noqa: BLE001
                 log.exception("stream failed")

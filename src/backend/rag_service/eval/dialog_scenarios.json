@@ -1,0 +1,47 @@
+[
+  {
+    "name": "Срок рассмотрения приказа с уточнением",
+    "steps": [
+      {
+        "user": "Какой срок рассмотрения?",
+        "regex": "Уточните.*виде документа",
+        "asks_clarification": true,
+        "max_words": 20
+      },
+      {
+        "user": "приказ",
+        "points": ["10.3"],
+        "max_words": 80,
+        "asks_clarification": false
+      }
+    ]
+  },
+  {
+    "name": "Визирование распоряжения с уточнением",
+    "steps": [
+      {
+        "user": "В какой последовательности проводится визирование?",
+        "regex": "Уточните.*виде документа",
+        "asks_clarification": true,
+        "max_words": 20
+      },
+      {
+        "user": "а для распоряжения?",
+        "points": ["10.6"],
+        "max_words": 80,
+        "asks_clarification": false
+      }
+    ]
+  },
+  {
+    "name": "Форматирование документа",
+    "steps": [
+      {
+        "user": "Какой шрифт и размер полей в тексте документа?",
+        "points": ["8.16"],
+        "max_words": 80,
+        "asks_clarification": false
+      }
+    ]
+  }
+]

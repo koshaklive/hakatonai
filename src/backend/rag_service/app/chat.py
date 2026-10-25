@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import time
 from dataclasses import dataclass, field
@@ -22,13 +23,69 @@ log = logging.getLogger("chat")
 REFUSAL = "В действующей Инструкции нет ответа на этот вопрос. Попробуйте переформулировать вопрос или уточнить тему."
 GRAY_NOTE = ("⚠ Найденные фрагменты лишь частично соответствуют вопросу: ответ может быть неполным, "
              "проверьте указанные пункты.\n\n")
-SYSTEM = (
-    "Ты отвечаешь на вопросы по Инструкции по документационному обеспечению управления. "
-    "Используй ТОЛЬКО фрагменты из блока «Контекст». Не добавляй сведений, которых там нет. "
-    "Каждое утверждение подтверждай ссылкой в квадратных скобках ровно в том виде, как она стоит в заголовке фрагмента: "
-    "[п. 6.4], [п. 10.3, 10.6] для Инструкции и, например, [MTX.int.6] или [MR.4.2] для остальных документов. "
-    "Ссылайся только на фрагменты из контекста. Если в контексте нет ответа, ответь ровно: «" + REFUSAL + "» "
-    "Отвечай кратко, на русском языке, цифры и сроки приводи как в тексте пункта.")
+SYSTEM = (Path(__file__).resolve().parents[1] / "llm_layer" / "prompts" / "rag_answer.md").read_text(
+    encoding="utf-8"
+).strip()
+DETERMINISTIC_RESPONSES = {
+    "smalltalk": [
+        "Здравствуйте! Задайте вопрос о сроке, согласовании или оформлении документа.",
+        "Здравствуйте! Чем могу помочь по Инструкции? Напишите, какой документ или пункт вас интересует.",
+        "Постараюсь помочь с вопросами по Инструкции. Уточните нужный документ или процедуру.",
+    ],
+    "emotion": [
+        "Жаль, что вам сейчас тяжело. Если на душе тяжело, поговорите с близкими или руководителем; по работе помогу — уточните, какой документ нужен.",
+        "Понимаю, что ситуация может расстраивать. Если на душе тяжело, поговорите с близкими или руководителем; я помогу по работе — напишите ваш вопрос по документам.",
+    ],
+    "off_topic": [
+        "Я не могу советовать по вопросам здоровья или денег. Могу помочь со сроками приказа, согласованием документа и регистрацией письма; выберите тему.",
+        "По здоровью и личным финансам я не консультирую. Зато подскажу про оформление приказа, визирование документа и регистрацию входящего письма — с чего начнём?",
+        "Не буду давать советы о здоровье или деньгах. Могу объяснить порядок согласования, регистрации или хранения документов; напишите, что нужно.",
+    ],
+    "out_of_domain": [
+        "В Инструкции по документообороту про это нет. Лучше уточнить в Департаменте ДОУ. С документами помогу: например, подскажу, как согласовать приказ.",
+        "В Инструкции по документообороту про это нет. Лучше уточнить в Департаменте ДОУ. С документами помогу: например, разберём регистрацию входящего письма.",
+        "В Инструкции по документообороту про это нет. Лучше уточнить в Департаменте ДОУ. С документами помогу: например, расскажу, кто визирует распоряжение.",
+    ],
+    "partial_match": [
+        "В базе сказано, что доверенность может быть основанием права подписи [п. 8.19.5], а печать заверяет подпись на бумажной доверенности [п. 8.23]. Порядок выдачи доверенности не описан. Хотите узнать, кто вправе подписывать документы?",
+        "Инструкция упоминает доверенность как основание права подписи [п. 8.19.5] и указывает, что печать заверяет подпись на бумажной доверенности [п. 8.23]. Порядок оформления или выдачи доверенности не описан. Могу пояснить правила о праве подписи.",
+    ],
+    "rudeness": [
+        "Постараюсь помочь по Инструкции. Напишите вопрос о сроке, согласовании или оформлении документа.",
+        "Давайте вернёмся к задаче по Инструкции. Уточните, какой документ или пункт нужно разобрать.",
+    ],
+    "gratitude": [
+        "Пожалуйста! Если появится вопрос по документам, напишите его здесь.",
+        "Пожалуйста! Можете прислать следующий вопрос по Инструкции.",
+    ],
+}
+
+
+def deterministic_response(intent_data: dict[str, Any]) -> str:
+    """Return a randomized canned reply, or the legacy short-query prompt."""
+    intent = intent_data.get("intent")
+    if intent in DETERMINISTIC_RESPONSES:
+        return random.choice(DETERMINISTIC_RESPONSES[intent])
+    text = intent_data.get("text")
+    if isinstance(text, str):
+        return text
+    raise ValueError(f"No deterministic response configured for intent: {intent!r}")
+
+
+CLARIFY_ANSWER = (
+    "Объясни этот ответ проще, на бытовом примере из текста фрагмента. Ничего не придумывай. "
+    "В конце обязательно спроси: «Стало понятнее?»"
+)
+
+
+def _ensure_clarification_ending(answer: str) -> str:
+    answer = answer.strip().rstrip(" \t\n\"'«»")
+    if answer.lower().endswith("стало понятнее?"):
+        return answer
+    answer = answer.rstrip("?!。.")
+    return f"{answer}\nСтало понятнее?" if answer else "Стало понятнее?"
+
+
 MODE_PROMPTS = {
     "explain": "Объясни найденные пункты простыми словами без канцелярита. Строго на основе фрагментов. В самом конце ответа с новой строки напиши: «Дословно в Инструкции: п. [номера пунктов]».",
     "summarize": "Сделай краткий маркированный конспект (до 7 пунктов) на основе найденных фрагментов. Не теряй числа, сроки и ответственных лиц. Запрещено использовать информацию вне фрагментов.",
@@ -168,12 +225,54 @@ class ChatService:
             log.warning("clarify llm failed: %s", e)
         return None
 
-    def prepare(self, run: Run, question: str, history: list[dict[str, str]] | None, max_access: int
-                ) -> tuple[ChatAnswer | None, dict[str, Any]]:
+    def prepare(
+        self,
+        run: Run,
+        question: str,
+        history: list[dict[str, str]] | None,
+        max_access: int,
+        last_context: str = "",
+    ) -> tuple[ChatAnswer | None, dict[str, Any]]:
         question = normalize_query(question.strip()[:self.cfg.query_max_len])
         if not question:
             return self._done(run, answer=REFUSAL, refused=True, reason="empty_question", query="", sources=[]), {}
         intent_data = analyze_intent(question)
+        if intent_data["action"] == "reply":
+            return self._done(
+                run,
+                answer=deterministic_response(intent_data),
+                refused=False,
+                reason=intent_data["intent"],
+                query=question,
+                sources=[],
+            ), {}
+        if intent_data["action"] == "clarify":
+            previous_answer = next(
+                (message["content"] for message in reversed(history or []) if message["role"] == "assistant"),
+                "",
+            )
+            if not previous_answer or not last_context:
+                return self._done(
+                    run,
+                    answer="Не вижу предыдущего ответа вместе с текстом фрагмента. Задайте вопрос по документам, и я объясню его проще.",
+                    refused=False,
+                    reason="clarification",
+                    query=question,
+                    sources=[],
+                ), {}
+            messages = [
+                {"role": "system", "content": CLARIFY_ANSWER},
+                {
+                    "role": "user",
+                    "content": f"Текст фрагмента:\n{last_context}\n\nПредыдущий ответ:\n{previous_answer}",
+                },
+            ]
+            return None, {
+                "action": "clarify",
+                "messages": messages,
+                "query": question,
+                "context_text": last_context,
+            }
         if intent_data.get("intent") == "frustration":
             previous_question = next((message["content"] for message in reversed(history or [])
                                       if message["role"] == "user"), "")
@@ -212,7 +311,7 @@ class ChatService:
                               refused=True, reason="below_threshold", query=q, sources=[],
                               max_relevance=r.max_relevance), {}
         mode = intent_data.get("mode", "default")
-        sys_prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS["default"])
+        sys_prompt = SYSTEM + "\n\n" + MODE_PROMPTS.get(mode, MODE_PROMPTS["default"])
         if gray:
             closest = ", ".join(hit.point for hit in r.hits[:3])
             sys_prompt += (
@@ -246,13 +345,27 @@ class ChatService:
         return self._done(run, answer=gray_note + text, refused=False, reason=None,
                           sources=[s for s in src if s["point"] in used] or src, **kw)
 
-    def answer(self, question: str, history: list[dict[str, str]] | None = None, max_access: int = 0) -> ChatAnswer:
+    def answer(self, question: str, history: list[dict[str, str]] | None = None, max_access: int = 0,
+               last_context: str = "") -> ChatAnswer:
         run = Run()
-        fin, st = self.prepare(run, question, history, max_access)
+        fin, st = self.prepare(run, question, history, max_access, last_context)
         if fin:
             return fin
 
         t1 = time.perf_counter()
+        if st.get("action") == "clarify":
+            raw = self._llm(run, st["messages"])
+            answer = _ensure_clarification_ending(raw)
+            run.tm["llm"] = int((time.perf_counter() - t1) * 1000)
+            return self._done(
+                run,
+                answer=answer,
+                refused=False,
+                reason="clarification",
+                query=st["query"],
+                sources=[],
+                context_text=st["context_text"],
+            )
 
         mode = st.get("mode", "default")
         r = st.get("r")
@@ -277,14 +390,35 @@ class ChatService:
         return self.finalize(run, st, raw)
 
     def stream_events(self, question: str, history: list[dict[str, str]] | None = None,
-                      max_access: int = 1) -> Iterator[tuple[str, dict[str, Any]]]:
+                      max_access: int = 1, last_context: str = "") -> Iterator[tuple[str, dict[str, Any]]]:
         """Order: sources → delta* → done. `done` carries the final (citation-checked) response."""
         run = Run()
-        fin, st = self.prepare(run, question, history, max_access)
+        fin, st = self.prepare(run, question, history, max_access, last_context)
         if fin:
             yield "sources", {"sources": []}
             yield "delta", {"text": fin.answer}
             yield "done", to_api(fin)
+            return
+        if st.get("action") == "clarify":
+            yield "sources", {"sources": []}
+            run.calls += 1
+            t1 = time.perf_counter()
+            parts: list[str] = []
+            for delta in self.llm.chat_stream(st["messages"]):
+                parts.append(delta)
+                yield "delta", {"text": delta}
+            run.tm["llm"] = int((time.perf_counter() - t1) * 1000)
+            answer = _ensure_clarification_ending("".join(parts))
+            result = self._done(
+                run,
+                answer=answer,
+                refused=False,
+                reason="clarification",
+                query=st["query"],
+                sources=[],
+                context_text=st["context_text"],
+            )
+            yield "done", to_api(result)
             return
         yield "sources", {"sources": [{k: s[k] for k in ("point", "doc", "chapter", "page", "relevance", "version", "text_preview")}
                                       for s in st["src"]], "query_used": st["q"]}
@@ -297,4 +431,7 @@ class ChatService:
             buf.append(d)
             yield "delta", {"text": d}
         run.tm["llm"] = int((time.perf_counter() - t1) * 1000)
-        yield "done", to_api(self.finalize(run, st, "".join(buf)))
+        result = self.finalize(run, st, "".join(buf))
+        done = to_api(result)
+        done["_context_text"] = result.context_text
+        yield "done", done
